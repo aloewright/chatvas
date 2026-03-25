@@ -101,6 +101,40 @@ git push origin v1.0.0
 
 This triggers the CI pipeline which builds for Windows, macOS, and Linux, then creates a GitHub Release with all the artifacts.
 
+## Cloudflare Deployment
+
+Chat Nodes Canvas includes optional Cloudflare infrastructure for:
+- **Static website hosting** (Cloudflare Pages)
+- **API backend** (Cloudflare Workers)
+- **AI Gateway** for AI model access
+- **Media storage** (R2) for images, PDFs, and videos
+- **Database** (D1) for user data
+- **Vector search** (Vectorize) for semantic search
+- **Canvas containers** (Durable Objects) for real-time collaboration
+- **Authentication** (Cloudflare Access)
+
+### Quick Deploy
+
+```bash
+# Install Wrangler CLI
+npm install
+
+# Deploy Worker API
+npm run deploy:worker
+
+# Deploy static website to Pages
+npm run deploy:pages
+```
+
+### Full Setup Guide
+
+See [CLOUDFLARE_SETUP.md](CLOUDFLARE_SETUP.md) for complete setup instructions including:
+- Creating Cloudflare resources (KV, D1, R2, Vectorize, AI Gateway)
+- Configuring GitHub Secrets for CI/CD
+- Setting up Cloudflare Access for authentication
+- Database migrations
+- Environment configuration
+
 ## License
 
 [MIT](LICENSE)

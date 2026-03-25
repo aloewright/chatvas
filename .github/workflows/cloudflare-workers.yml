@@ -1,0 +1,53 @@
+name: Deploy to Cloudflare Workers
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'src/worker/**'
+      - 'wrangler.toml'
+      - '.github/workflows/cloudflare-workers.yml'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    name: Deploy Worker to Cloudflare
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Deploy to Cloudflare Workers
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: deploy
+
+      - name: Deployment Summary
+        run: |
+          echo "✅ Worker deployed to Cloudflare"
+          echo "🔧 Worker: chatvas-api"
+          echo "🌍 Environment: production"
+          echo ""
+          echo "📊 Configured bindings:"
+          echo "  - AI Gateway: x"
+          echo "  - Workers KV: KV"
+          echo "  - D1 Database: DB"
+          echo "  - Vectorize: VECTORIZE"
+          echo "  - R2 Bucket: MEDIA"
+          echo "  - Durable Objects: CANVAS_CONTAINER"
