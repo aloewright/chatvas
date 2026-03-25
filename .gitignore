@@ -28,3 +28,9 @@ Thumbs.db
 # Logs
 *.log
 npm-debug.log*
+
+# Cloudflare
+.wrangler/
+.dev.vars
+wrangler.toml.bak
+.mf/

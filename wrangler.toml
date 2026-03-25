@@ -1,0 +1,79 @@
+# Cloudflare Workers configuration for Chat Nodes Canvas
+
+name = "chatvas-api"
+main = "src/worker/index.js"
+compatibility_date = "2024-01-01"
+workers_dev = true
+
+# AI Gateway binding for AI model access
+[ai]
+binding = "AI"
+gateway = "x"
+
+# Workers KV for key-value storage (session data, preferences)
+[[kv_namespaces]]
+binding = "KV"
+id = "YOUR_KV_NAMESPACE_ID"
+preview_id = "YOUR_KV_PREVIEW_NAMESPACE_ID"
+
+# D1 Database for relational data (user data, canvas metadata)
+[[d1_databases]]
+binding = "DB"
+database_name = "chatvas-db"
+database_id = "YOUR_D1_DATABASE_ID"
+preview_database_id = "YOUR_D1_PREVIEW_DATABASE_ID"
+
+# Vectorize Index for semantic search and embeddings
+[[vectorize]]
+binding = "VECTORIZE"
+index_name = "chatvas-embeddings"
+
+# R2 Bucket for media storage (images, PDFs, videos)
+[[r2_buckets]]
+binding = "MEDIA"
+bucket_name = "chatvas-media"
+preview_bucket_name = "chatvas-media-preview"
+
+# Durable Objects for stateful canvas containers
+[[durable_objects.bindings]]
+name = "CANVAS_CONTAINER"
+class_name = "CanvasContainer"
+script_name = "chatvas-api"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["CanvasContainer"]
+
+# Service bindings for Composio API integration
+[[services]]
+binding = "COMPOSIO_API"
+service = "composio-integration"
+environment = "production"
+
+# Routes configuration - adjust based on your domain
+# routes = [
+#   { pattern = "api.chatvas.com/*", zone_name = "chatvas.com" }
+# ]
+
+# Cloudflare Access configuration
+# Note: Cloudflare Access is configured via the Cloudflare Dashboard
+# This is a placeholder for documentation purposes
+# [access]
+# enabled = true
+# policy_name = "chatvas-access-policy"
+
+[env.production]
+name = "chatvas-api-production"
+workers_dev = false
+
+[env.staging]
+name = "chatvas-api-staging"
+workers_dev = true
+
+# Build configuration
+[build]
+command = "npm run build:worker"
+
+# Observability
+[observability]
+enabled = true
