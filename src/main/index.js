@@ -1,5 +1,6 @@
 import { app, BrowserWindow, shell } from 'electron'
 import { join } from 'path'
+import { registerVideoIpc } from './video-ipc.js'
 
 let mainWindow
 
@@ -56,7 +57,10 @@ app.on('web-contents-created', (_event, contents) => {
   }
 })
 
-app.whenReady().then(createWindow)
+app.whenReady().then(() => {
+  createWindow()
+  registerVideoIpc({ getMainWindow: () => mainWindow })
+})
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
