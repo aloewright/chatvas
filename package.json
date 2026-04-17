@@ -25,14 +25,18 @@
     "db:migrate:preview": "wrangler d1 execute chatvas-db-preview --file=./migrations/0001_initial_schema.sql",
     "setup:video": "node scripts/bootstrap-openmontage.mjs",
     "doctor": "node scripts/doctor.mjs",
-    "postinstall": "git submodule update --init --recursive || true"
+    "install:python": "node scripts/install-python.mjs",
+    "postinstall": "node scripts/postinstall.mjs"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.113",
     "@xyflow/react": "^12.10.0",
+    "ffmpeg-static": "^5.3.0",
+    "ffprobe-static": "^3.1.0",
     "nanoid": "^5.0.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
+    "tar": "^7.5.13",
     "tree-kill": "^1.2.2",
     "zod": "^4.0.0"
   },
@@ -52,11 +56,20 @@
     "files": [
       "out/**/*"
     ],
+    "asarUnpack": [
+      "**/node_modules/ffmpeg-static/**",
+      "**/node_modules/ffprobe-static/**"
+    ],
     "extraResources": [
       {
         "from": "vendor/OpenMontage-adapter",
         "to": "vendor/OpenMontage-adapter",
         "filter": ["**/*.py"]
+      },
+      {
+        "from": "vendor/python-runtime",
+        "to": "python-runtime",
+        "filter": ["**/*"]
       }
     ],
     "win": {

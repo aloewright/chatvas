@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
 const VIDEO_STREAM = 'video:stream'
+const REGISTRY_INVALIDATED = 'video:registry-invalidated'
 
 contextBridge.exposeInMainWorld('electronAPI', {
   // --- ChatGPT branching (existing) ---
@@ -20,6 +21,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getJob: (jobId) => ipcRenderer.invoke('video:getJob', { jobId }),
     doctor: () => ipcRenderer.invoke('video:doctor'),
     openArtifact: (jobId, file) => ipcRenderer.invoke('video:openArtifact', { jobId, file }),
+    getFileUrl: (path) => ipcRenderer.invoke('video:getFileUrl', { path }),
     listRenders: () => ipcRenderer.invoke('video:listRenders'),
     deleteRender: (jobId) => ipcRenderer.invoke('video:deleteRender', { jobId }),
     enforceQuota: (quotaGb) => ipcRenderer.invoke('video:enforceQuota', { quotaGb }),
@@ -30,6 +32,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
       }
       ipcRenderer.on(VIDEO_STREAM, handler)
       return () => ipcRenderer.removeListener(VIDEO_STREAM, handler)
+    },
+    onRegistryInvalidated: (cb) => {
+      const handler = () => cb()
+      ipcRenderer.on(REGISTRY_INVALIDATED, handler)
+      return () => ipcRenderer.removeListener(REGISTRY_INVALIDATED, handler)
     }
   },
 

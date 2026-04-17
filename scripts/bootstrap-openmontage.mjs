@@ -1,11 +1,10 @@
 #!/usr/bin/env node
-// Bootstrap OpenMontage submodule: create Python venv, install deps, install Remotion deps, stub .env.
-// Run once after `git submodule update --init --recursive`.
+// Bootstrap OpenMontage submodule using the bundled Python: venv, pip install, Remotion deps, .env stub.
 // Safe to re-run; skips steps that are already done.
 
 import { execSync, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync, copyFileSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { join, resolve, delimiter } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url))
@@ -23,24 +22,23 @@ function die(msg) {
   process.exit(1)
 }
 
-function step(label) {
-  console.log(`\n[bootstrap] ▶ ${label}`)
-}
+function step(label) { console.log(`\n[bootstrap] ▶ ${label}`) }
 
 function run(cmd, args, opts = {}) {
   const res = spawnSync(cmd, args, { stdio: 'inherit', ...opts })
-  if (res.status !== 0) {
-    die(`command failed: ${cmd} ${args.join(' ')} (exit ${res.status})`)
-  }
+  if (res.status !== 0) die(`command failed: ${cmd} ${args.join(' ')} (exit ${res.status})`)
 }
 
-function which(bin) {
-  try {
-    return execSync(`${IS_WIN ? 'where' : 'command -v'} ${bin}`, { stdio: ['ignore', 'pipe', 'ignore'] })
-      .toString().trim().split(/\r?\n/)[0]
-  } catch {
-    return null
-  }
+function pythonTriple() {
+  const arch = process.arch === 'arm64' ? 'aarch64' : (process.arch === 'x64' ? 'x86_64' : process.arch)
+  if (process.platform === 'darwin') return `${arch}-apple-darwin`
+  if (IS_WIN) return `${arch}-pc-windows-msvc`
+  return `${arch}-unknown-linux-gnu`
+}
+
+function bundledPython() {
+  const root = join(ROOT, 'vendor', 'python-runtime', pythonTriple())
+  return IS_WIN ? join(root, 'python', 'python.exe') : join(root, 'python', 'bin', 'python3')
 }
 
 function ensureSubmodule() {
@@ -49,16 +47,30 @@ function ensureSubmodule() {
   }
 }
 
-function ensureAdapterDir() {
-  if (!existsSync(ADAPTER)) mkdirSync(ADAPTER, { recursive: true })
+function ensureBundledPython() {
+  const py = bundledPython()
+  if (!existsSync(py)) {
+    die(`Bundled Python not found at ${py}. Run: npm install (postinstall fetches Python automatically) or npm run install:python`)
+  }
+  try {
+    const out = execSync(`"${py}" --version`, { stdio: ['ignore', 'pipe', 'pipe'] }).toString().trim()
+    const m = out.match(/(\d+)\.(\d+)/)
+    if (!m || Number(m[1]) < 3 || (Number(m[1]) === 3 && Number(m[2]) < 10)) {
+      die(`bundled Python reports ${out}; need 3.10+. Reinstall with npm run install:python`)
+    }
+    console.log(`[bootstrap] bundled Python: ${out}`)
+  } catch (e) {
+    die(`could not run bundled Python: ${e.message}`)
+  }
+  return py
 }
 
-function ensureVenv() {
+function ensureAdapterDir() { if (!existsSync(ADAPTER)) mkdirSync(ADAPTER, { recursive: true }) }
+
+function ensureVenv(bundled) {
   if (existsSync(VENV_PY)) return
   step('Creating Python venv at vendor/OpenMontage/.venv')
-  const py = which('python3') || which('python')
-  if (!py) die('python3 not found on PATH. Install Python 3.10+ and retry.')
-  run(py, ['-m', 'venv', VENV])
+  run(bundled, ['-m', 'venv', VENV])
 }
 
 function upgradePip() {
@@ -100,12 +112,14 @@ function warmRegistry() {
     console.warn('[bootstrap] adapter list_pipelines.py missing — skipping registry warm')
     return
   }
-  const res = spawnSync(VENV_PY, [script], {
+  // Prepend OM to PYTHONPATH so user-configured paths still resolve.
+  const pythonPath = process.env.PYTHONPATH ? `${OM}${delimiter}${process.env.PYTHONPATH}` : OM
+  const res = spawnSync(VENV_PY, [script, '--warm'], {
     cwd: OM,
-    env: { ...process.env, PYTHONPATH: OM }
+    env: { ...process.env, PYTHONPATH: pythonPath }
   })
   if (res.status !== 0) {
-    console.warn('[bootstrap] registry warm-up exited non-zero (this is non-fatal)')
+    console.warn('[bootstrap] registry warm-up exited non-zero (non-fatal)')
     if (res.stderr) process.stderr.write(res.stderr)
   }
 }
@@ -116,7 +130,8 @@ function writeMarker() {
 
 ensureSubmodule()
 ensureAdapterDir()
-ensureVenv()
+const bundled = ensureBundledPython()
+ensureVenv(bundled)
 upgradePip()
 installPython()
 installNode()
@@ -125,4 +140,4 @@ warmRegistry()
 writeMarker()
 
 console.log('\n[bootstrap] ✓ Done. OpenMontage is ready.')
-console.log('[bootstrap]   Launch chatvas with `npm run dev` and open the Settings drawer to add provider keys.')
+console.log('[bootstrap]   Launch chatvas with `npm run dev` and open Settings to add provider keys.')

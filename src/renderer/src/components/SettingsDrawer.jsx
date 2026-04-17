@@ -46,7 +46,8 @@ export default function SettingsDrawer({ onClose }) {
   const saveModel = useCallback(async (m) => {
     await window.electronAPI.secrets.set('__MODEL__', m)
     setModel(m)
-  }, [])
+    refresh()
+  }, [refresh])
 
   return (
     <div className="settings-drawer-scrim" onClick={onClose}>
@@ -72,6 +73,11 @@ export default function SettingsDrawer({ onClose }) {
               <div className={doctor.registryError ? 'fail' : 'ok'}>
                 registry: {doctor.registryError ? doctor.registryError : `${doctor.pipelineCount} pipelines, ${doctor.toolCount} tools`}
               </div>
+              {doctor.secureStorage === false && (
+                <div className="fail" style={{ marginTop: 4 }}>
+                  ⚠ secret storage: plaintext (install gnome-keyring or kwallet for encryption)
+                </div>
+              )}
             </div>
           ) : (
             <div style={{ padding: '8px 16px', fontSize: 12, color: 'var(--text-muted)' }}>loading…</div>

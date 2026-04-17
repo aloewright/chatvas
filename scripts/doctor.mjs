@@ -1,12 +1,14 @@
 #!/usr/bin/env node
-// Preflight doctor: verifies Python 3.10+, FFmpeg, Node 18+, and whether OpenMontage bootstrap has run.
-// Prints a colored pass/fail table. Exits 0 on all green, 1 otherwise.
+// Preflight doctor: verifies bundled Python, bundled FFmpeg, Node 18+, OpenMontage bootstrap.
+// Prints a colored pass/fail/warn table. Exits 0 if no hard failures.
 
-import { execSync } from 'node:child_process'
+import { spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { join, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import { createRequire } from 'node:module'
 
+const require = createRequire(import.meta.url)
 const __dirname = fileURLToPath(new URL('.', import.meta.url))
 const ROOT = resolve(__dirname, '..')
 const OM = join(ROOT, 'vendor', 'OpenMontage')
@@ -15,48 +17,91 @@ const GREEN = '\x1b[32m'
 const RED = '\x1b[31m'
 const YELLOW = '\x1b[33m'
 const RESET = '\x1b[0m'
+const IS_WIN = process.platform === 'win32'
 
 const rows = []
 let hardFail = false
 
+function pushOk(label, detail) { rows.push({ label, status: 'ok', detail }) }
+function pushWarn(label, detail) { rows.push({ label, status: 'warn', detail }) }
+function pushFail(label, detail) { rows.push({ label, status: 'fail', detail }); hardFail = true }
+
 function check(label, fn) {
   try {
     const detail = fn()
-    rows.push({ label, status: 'ok', detail })
+    if (detail && typeof detail === 'object' && detail.warn) pushWarn(label, detail.detail)
+    else pushOk(label, detail)
   } catch (e) {
-    hardFail = true
-    rows.push({ label, status: 'fail', detail: e.message })
+    pushFail(label, e.message)
   }
 }
 
-function exec(cmd) {
-  return execSync(cmd, { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim()
+function execVersion(bin, args) {
+  const res = spawnSync(bin, args, { stdio: ['ignore', 'pipe', 'pipe'] })
+  if (res.error) throw new Error(res.error.message)
+  const out = (res.stdout || res.stderr)?.toString() || ''
+  if (res.status !== 0) throw new Error(out.split('\n')[0] || `exit ${res.status}`)
+  return out.split('\n')[0].trim()
 }
 
-function parseMajorMinor(s) {
-  const m = s.match(/(\d+)\.(\d+)(?:\.(\d+))?/)
-  if (!m) throw new Error(`cannot parse version from: ${s}`)
-  return [parseInt(m[1], 10), parseInt(m[2], 10)]
+function pythonTriple() {
+  const arch = process.arch === 'arm64' ? 'aarch64' : (process.arch === 'x64' ? 'x86_64' : process.arch)
+  if (process.platform === 'darwin') return `${arch}-apple-darwin`
+  if (IS_WIN) return `${arch}-pc-windows-msvc`
+  return `${arch}-unknown-linux-gnu`
 }
 
-check('Python 3.10+', () => {
-  let py
-  try { py = exec('python3 --version') } catch { py = exec('python --version') }
-  const [maj, min] = parseMajorMinor(py)
-  if (maj < 3 || (maj === 3 && min < 10)) throw new Error(`found ${py}, need >= 3.10`)
-  return py
-})
+function bundledPython() {
+  const root = join(ROOT, 'vendor', 'python-runtime', pythonTriple())
+  return IS_WIN ? join(root, 'python', 'python.exe') : join(root, 'python', 'bin', 'python3')
+}
 
-check('FFmpeg', () => {
-  const v = exec('ffmpeg -version').split('\n')[0]
-  return v
-})
+function bundledFfmpeg() {
+  try {
+    const m = require('ffmpeg-static')
+    return typeof m === 'string' ? m : m?.default
+  } catch { return null }
+}
+
+function bundledFfprobe() {
+  try {
+    const m = require('ffprobe-static')
+    return typeof m === 'string' ? m : (m?.path || m?.default)
+  } catch { return null }
+}
 
 check('Node 18+', () => {
   const v = process.version.replace(/^v/, '')
-  const [maj] = parseMajorMinor(v)
+  const [maj] = v.split('.').map(Number)
   if (maj < 18) throw new Error(`found v${v}, need >= 18`)
   return `v${v}`
+})
+
+check('Bundled Python 3.10+', () => {
+  const py = bundledPython()
+  if (!existsSync(py)) {
+    throw new Error(`not found at ${py} — run: npm install (postinstall fetches Python)`)
+  }
+  const v = execVersion(py, ['--version'])
+  const m = v.match(/(\d+)\.(\d+)/)
+  if (!m || Number(m[1]) < 3 || (Number(m[1]) === 3 && Number(m[2]) < 10)) {
+    throw new Error(`${v} — need 3.10+`)
+  }
+  return `${v} @ ${py}`
+})
+
+check('Bundled FFmpeg', () => {
+  const p = bundledFfmpeg()
+  if (!p) throw new Error('ffmpeg-static not installed — run: npm install')
+  if (!existsSync(p)) throw new Error(`binary missing at ${p}`)
+  return execVersion(p, ['-version'])
+})
+
+check('Bundled FFprobe', () => {
+  const p = bundledFfprobe()
+  if (!p) throw new Error('ffprobe-static not installed — run: npm install')
+  if (!existsSync(p)) throw new Error(`binary missing at ${p}`)
+  return execVersion(p, ['-version'])
 })
 
 check('OpenMontage submodule', () => {
@@ -73,9 +118,9 @@ check('OpenMontage bootstrap', () => {
   return 'ready'
 })
 
-check('ANTHROPIC_API_KEY', () => {
+check('ANTHROPIC_API_KEY (env)', () => {
   if (!process.env.ANTHROPIC_API_KEY) {
-    throw new Error('env var not set (the app stores this via Settings; unset here is OK for runtime)')
+    return { warn: true, detail: 'not in shell env (OK — app stores via Settings)' }
   }
   return 'set in shell env'
 })
@@ -83,8 +128,10 @@ check('ANTHROPIC_API_KEY', () => {
 const pad = (s, n) => s + ' '.repeat(Math.max(0, n - s.length))
 console.log('\nChatvas Video Studio — doctor\n')
 for (const r of rows) {
-  const icon = r.status === 'ok' ? `${GREEN}✓${RESET}` : `${RED}✗${RESET}`
-  const color = r.status === 'ok' ? GREEN : YELLOW
+  let icon, color
+  if (r.status === 'ok') { icon = `${GREEN}✓${RESET}`; color = GREEN }
+  else if (r.status === 'warn') { icon = `${YELLOW}!${RESET}`; color = YELLOW }
+  else { icon = `${RED}✗${RESET}`; color = RED }
   console.log(`  ${icon} ${pad(r.label, 26)} ${color}${r.detail}${RESET}`)
 }
 console.log('')

@@ -229,6 +229,7 @@ function App() {
           y: Math.random() * 400 - 200
         },
         data: {
+          initialPrompt: '',
           registerWebview,
           unregisterWebview,
           onBranch: onBranchStable,

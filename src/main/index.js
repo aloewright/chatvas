@@ -1,6 +1,14 @@
-import { app, BrowserWindow, shell } from 'electron'
+import { app, BrowserWindow, shell, protocol, net } from 'electron'
 import { join } from 'path'
+import { pathToFileURL } from 'node:url'
 import { registerVideoIpc } from './video-ipc.js'
+
+// Serve local rendered artifacts via a custom privileged scheme so the renderer can load them
+// from the dev-server origin without disabling webSecurity. The renderer asks for a URL via
+// `video:getFileUrl`; the main process returns `chatvas-media://<encoded-path>`.
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'chatvas-media', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true, bypassCSP: true } }
+])
 
 let mainWindow
 
@@ -58,6 +66,20 @@ app.on('web-contents-created', (_event, contents) => {
 })
 
 app.whenReady().then(() => {
+  // chatvas-media:// — serves local files returned by video:getFileUrl.
+  // URL form: chatvas-media://host/<url-encoded-absolute-path>
+  // Parsed as: decodeURIComponent(new URL(request.url).pathname)  (pathname has the leading "/")
+  try {
+    protocol.handle('chatvas-media', (request) => {
+      const u = new URL(request.url)
+      // `pathname` starts with "/"; strip and decode.
+      const abs = decodeURIComponent(u.pathname.replace(/^\//, ''))
+      return net.fetch(pathToFileURL(abs).href)
+    })
+  } catch (e) {
+    console.warn('[main] failed to register chatvas-media protocol:', e?.message)
+  }
+
   createWindow()
   registerVideoIpc({ getMainWindow: () => mainWindow })
 })

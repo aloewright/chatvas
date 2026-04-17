@@ -1,6 +1,5 @@
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync, statSync } from 'node:fs'
 import { join, resolve, relative, sep } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import treeKill from 'tree-kill'
@@ -9,11 +8,14 @@ import { query, tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk'
 
 import { PythonBridge, listPipelinesAndTools } from './python-bridge.js'
 import { getModel, getSecret, buildChildEnv } from './secrets.js'
-import { jobDir, appendEvent, writeManifest } from './artifact-store.js'
+import { jobDir, appendEvent, writeManifest, refreshManifestBytes } from './artifact-store.js'
+import { repoRoot } from './runtimes.js'
 
-function repoRoot() {
-  return resolve(fileURLToPath(new URL('../..', import.meta.url)))
-}
+const IS_WIN = process.platform === 'win32'
+const MAX_READ_BYTES = 1_000_000           // 1 MB cap on read_file
+const STDERR_TAIL_BYTES = 4096             // bounded ring buffer for render stderr
+const LOG_EVENT_CAP = 2000                 // chars — prevents absurd payloads from drowning the renderer
+
 function omRoot() { return join(repoRoot(), 'vendor', 'OpenMontage') }
 
 // Path whitelist: read-only access limited to these prefixes plus the job dir.
@@ -42,8 +44,17 @@ function readIfPresent(path) {
   try { return readFileSync(path, 'utf-8') } catch { return '' }
 }
 
-// Build the orchestrator system prompt. Deliberately verbose and authoritative —
-// OpenMontage's skills expect the agent to have read the guide verbatim.
+// Deterministic, bounded-size JSON serialization for log payloads.
+function truncate(v, max = LOG_EVENT_CAP) {
+  try {
+    const s = typeof v === 'string' ? v : JSON.stringify(v)
+    if (s.length <= max) return v
+    return s.slice(0, max) + `…(+${s.length - max}b)`
+  } catch {
+    return '[unserializable]'
+  }
+}
+
 function buildSystemPrompt({ workDir, pipelineId }) {
   const om = omRoot()
   const parts = []
@@ -91,7 +102,6 @@ not need to handle keys yourself.`
   return parts.join('')
 }
 
-// Parent-context appendix for branched jobs.
 function buildBranchContext(parentContext) {
   if (!parentContext) return ''
   const { parentPrompt, parentJobId, parentSummary } = parentContext
@@ -103,7 +113,6 @@ export function startVideoJob({ jobId, prompt, pipelineId, parentContext, abortS
   const workDir = jobDir(jobId)
   const startedAt = Date.now()
 
-  // Throttle + forward.
   const emit = (type, payload) => {
     const evt = { jobId, ts: Date.now(), type, payload }
     try { appendEvent(jobId, evt) } catch { /* disk full? ignore */ }
@@ -115,7 +124,6 @@ export function startVideoJob({ jobId, prompt, pipelineId, parentContext, abortS
     onLog: (chunk) => emit('log', { stream: 'python', text: chunk })
   })
 
-  // Track child PIDs for cancellation cascade.
   const activeChildren = new Set()
   function registerChild(child) {
     if (!child?.pid) return
@@ -128,7 +136,6 @@ export function startVideoJob({ jobId, prompt, pipelineId, parentContext, abortS
     bridge.stop('SIGTERM')
   }
 
-  // Internal AbortController that fans out cancellation.
   const ac = new AbortController()
   if (abortSignal) {
     if (abortSignal.aborted) ac.abort()
@@ -144,8 +151,7 @@ export function startVideoJob({ jobId, prompt, pipelineId, parentContext, abortS
     {},
     async () => {
       const envelope = await listPipelinesAndTools()
-      const text = JSON.stringify({ pipelines: envelope.pipelines }, null, 2)
-      return { content: [{ type: 'text', text }] }
+      return { content: [{ type: 'text', text: JSON.stringify({ pipelines: envelope.pipelines }, null, 2) }] }
     }
   )
 
@@ -155,7 +161,6 @@ export function startVideoJob({ jobId, prompt, pipelineId, parentContext, abortS
     {},
     async () => {
       const envelope = await listPipelinesAndTools()
-      // Keep the payload small by trimming verbose fields.
       const tools = {}
       for (const [name, info] of Object.entries(envelope.tools || {})) {
         tools[name] = {
@@ -177,10 +182,10 @@ export function startVideoJob({ jobId, prompt, pipelineId, parentContext, abortS
     'Invoke a registered OpenMontage tool by name with an args dict. Returns the tool result including success/error, artifacts, duration_seconds, and cost_usd.',
     {
       name: z.string().describe('Exact tool name from list_tools (e.g., script.generate_outline)'),
-      args: z.record(z.any()).describe('Tool input dict matching the tool input_schema')
+      args: z.record(z.string(), z.any()).describe('Tool input dict matching the tool input_schema')
     },
     async ({ name, args }) => {
-      emit('tool_call_start', { tool: name, args })
+      emit('tool_call_start', { tool: name, args: truncate(args) })
       try {
         const res = await bridge.runTool(name, args, {
           signal: ac.signal,
@@ -200,7 +205,7 @@ export function startVideoJob({ jobId, prompt, pipelineId, parentContext, abortS
 
   const t_readFile = tool(
     'read_file',
-    'Read an absolute path inside OpenMontage skills/, pipeline_defs/, schemas/, styles/, or the current job working directory.',
+    'Read an absolute path inside OpenMontage skills/, pipeline_defs/, schemas/, styles/, or the current job working directory. Returns UTF-8 text; rejects binaries and files > 1 MB.',
     {
       path: z.string().describe('Absolute path to a file. Must be under an allowed root.')
     },
@@ -213,8 +218,19 @@ export function startVideoJob({ jobId, prompt, pipelineId, parentContext, abortS
       if (!existsSync(path)) {
         return { content: [{ type: 'text', text: `File not found: ${path}` }], is_error: true }
       }
-      const text = readFileSync(path, 'utf-8')
-      return { content: [{ type: 'text', text }] }
+      let size
+      try { size = statSync(path).size } catch { size = -1 }
+      if (size < 0) return { content: [{ type: 'text', text: `stat failed: ${path}` }], is_error: true }
+      if (size > MAX_READ_BYTES) {
+        return { content: [{ type: 'text', text: `File too large (${size} bytes > ${MAX_READ_BYTES})` }], is_error: true }
+      }
+      const buf = readFileSync(path)
+      // Coarse binary detection: reject if a NUL byte is in the first 8KB.
+      const head = buf.subarray(0, Math.min(buf.length, 8192))
+      if (head.includes(0)) {
+        return { content: [{ type: 'text', text: `Binary content detected; refusing to read ${path}` }], is_error: true }
+      }
+      return { content: [{ type: 'text', text: buf.toString('utf-8') }] }
     }
   )
 
@@ -238,6 +254,7 @@ export function startVideoJob({ jobId, prompt, pipelineId, parentContext, abortS
     }
   )
 
+  const SAFE_ARG = /^[A-Za-z0-9_\-.:/\\+ ]+$/
   const t_renderRemotion = tool(
     'render_remotion',
     'Run Remotion render against the composer bundle. Pass the composition id and a props JSON path (absolute). Output MP4 path is returned.',
@@ -257,19 +274,30 @@ export function startVideoJob({ jobId, prompt, pipelineId, parentContext, abortS
           resolvePromise({ content: [{ type: 'text', text: `outputAbsPath must be under job dir ${workDir}` }], is_error: true })
           return
         }
-        const isWin = process.platform === 'win32'
+        // Validate agent-controlled inputs before passing to spawn — no shell metacharacters.
+        for (const s of [compositionId, propsJsonAbsPath, outputAbsPath]) {
+          if (!SAFE_ARG.test(s)) {
+            resolvePromise({ content: [{ type: 'text', text: `illegal characters in argument: ${s}` }], is_error: true })
+            return
+          }
+        }
+        if (!/^[A-Za-z0-9_-]+$/.test(compositionId)) {
+          resolvePromise({ content: [{ type: 'text', text: `compositionId must match [A-Za-z0-9_-]+` }], is_error: true })
+          return
+        }
+
+        const cmd = IS_WIN ? 'npx.cmd' : 'npx'
         const args = ['remotion', 'render', 'src/index.ts', compositionId, outputAbsPath, `--props=${propsJsonAbsPath}`]
         const env = buildChildEnv()
-        const child = spawn('npx', args, { cwd: composer, env, shell: isWin })
+        const child = spawn(cmd, args, { cwd: composer, env, shell: false })
         registerChild(child)
         const abortHandler = () => { try { treeKill(child.pid, 'SIGTERM', () => {}) } catch { /* ignore */ } }
         ac.signal.addEventListener('abort', abortHandler, { once: true })
 
-        let stdout = ''
-        let stderr = ''
+        let stderrTail = ''
         child.stdout.on('data', (chunk) => {
           const text = chunk.toString('utf-8')
-          stdout += text
+          // Don't keep stdout in memory — just scan for progress and forward logs.
           const m = text.match(/(\d+)\s*%/g)
           if (m) {
             const last = m[m.length - 1]
@@ -280,8 +308,12 @@ export function startVideoJob({ jobId, prompt, pipelineId, parentContext, abortS
         })
         child.stderr.on('data', (chunk) => {
           const text = chunk.toString('utf-8')
-          stderr += text
+          stderrTail = (stderrTail + text).slice(-STDERR_TAIL_BYTES)
           emit('log', { stream: 'remotion', text })
+        })
+        child.on('error', (e) => {
+          ac.signal.removeEventListener('abort', abortHandler)
+          resolvePromise({ content: [{ type: 'text', text: `spawn error: ${e.message}` }], is_error: true })
         })
         child.on('exit', (code) => {
           ac.signal.removeEventListener('abort', abortHandler)
@@ -290,7 +322,7 @@ export function startVideoJob({ jobId, prompt, pipelineId, parentContext, abortS
             resolvePromise({ content: [{ type: 'text', text: `rendered to ${outputAbsPath}` }] })
           } else {
             resolvePromise({
-              content: [{ type: 'text', text: `remotion exit ${code}\nstderr tail:\n${stderr.slice(-1200)}` }],
+              content: [{ type: 'text', text: `remotion exit ${code}\nstderr tail:\n${stderrTail.slice(-1200)}` }],
               is_error: true
             })
           }
@@ -328,26 +360,28 @@ export function startVideoJob({ jobId, prompt, pipelineId, parentContext, abortS
 
   const systemPrompt = buildSystemPrompt({ workDir, pipelineId }) + buildBranchContext(parentContext)
   const model = getModel()
-
-  // User message: the raw prompt plus a tiny header so the agent knows intent.
   const userPrompt = `${prompt.trim()}\n\n(Pipeline hint: ${pipelineId || 'auto — pick one via list_pipelines'})`
 
-  // Kick off the agent loop.
+  // Run the SDK with a temporarily set ANTHROPIC_API_KEY. The SDK reads it from process.env;
+  // we scope the mutation in a try/finally so concurrent jobs or the rest of the app don't
+  // see a lingering key.
   const loopPromise = (async () => {
     emit('status', 'running')
 
-    const anthropicKey = getSecret('ANTHROPIC_API_KEY')
-    if (!anthropicKey) {
-      emit('status', 'error')
-      throw new Error('ANTHROPIC_API_KEY not set. Add it in Settings.')
-    }
-    // The SDK reads ANTHROPIC_API_KEY from process.env; set it on this process's env
-    // for the duration of the job. It's already in memory.
-    process.env.ANTHROPIC_API_KEY = anthropicKey
-
-    const heartbeat = setInterval(() => emit('status', 'running'), 5000)
+    let terminalStatus = 'error'
+    let loopError = null
+    let heartbeat
+    const previousAnthropicKey = process.env.ANTHROPIC_API_KEY
+    let keyWasSet = false
 
     try {
+      const anthropicKey = getSecret('ANTHROPIC_API_KEY')
+      if (!anthropicKey) throw new Error('ANTHROPIC_API_KEY not set. Add it in Settings.')
+      process.env.ANTHROPIC_API_KEY = anthropicKey
+      keyWasSet = true
+
+      heartbeat = setInterval(() => emit('status', 'running'), 5000)
+
       const iterator = query({
         prompt: userPrompt,
         options: {
@@ -377,61 +411,54 @@ export function startVideoJob({ jobId, prompt, pipelineId, parentContext, abortS
             if (block.type === 'text' && block.text) {
               emit('agent_text', { text: block.text })
             } else if (block.type === 'tool_use') {
-              // Tool start is already emitted from inside the tool handlers;
-              // also surface here for any tool the SDK routes without our wrapper.
               emit('agent_tool_use', { name: block.name, input: truncate(block.input) })
             }
           }
         } else if (msg.type === 'result') {
           if (msg.subtype === 'success') {
-            emit('log', { stream: 'agent', text: `loop finished (turns=${msg.num_turns || '?'})` })
+            emit('loop_finished', { turns: msg.num_turns ?? null })
           } else {
-            emit('log', { stream: 'agent', text: `loop ended subtype=${msg.subtype}` })
+            emit('loop_finished', { turns: msg.num_turns ?? null, subtype: msg.subtype })
           }
         }
       }
+
+      if (ac.signal.aborted) terminalStatus = 'cancelled'
+      else if (finalized) terminalStatus = 'done'
+      else terminalStatus = 'error'
+    } catch (e) {
+      loopError = e
+      emit('log', { stream: 'agent', text: `loop error: ${e.message}` })
+      terminalStatus = ac.signal.aborted ? 'cancelled' : 'error'
     } finally {
-      clearInterval(heartbeat)
+      if (heartbeat) clearInterval(heartbeat)
       bridge.stop('SIGTERM')
-    }
+      if (keyWasSet) {
+        if (previousAnthropicKey === undefined) delete process.env.ANTHROPIC_API_KEY
+        else process.env.ANTHROPIC_API_KEY = previousAnthropicKey
+      }
 
-    // Build + persist the manifest.
-    const manifest = {
-      jobId,
-      createdAt: startedAt,
-      finishedAt: Date.now(),
-      prompt,
-      pipelineId: pipelineId || null,
-      parentJobId: parentContext?.parentJobId || null,
-      model,
-      finalized: !!finalized,
-      summary: finalized?.summary || null,
-      artifacts: finalized ? [{ kind: 'mp4', absPath: finalized.outputMp4AbsPath }] : []
-    }
-    writeManifest(jobId, manifest)
+      const manifest = {
+        jobId,
+        createdAt: startedAt,
+        finishedAt: Date.now(),
+        prompt,
+        pipelineId: pipelineId || null,
+        parentJobId: parentContext?.parentJobId || null,
+        model,
+        finalized: !!finalized,
+        summary: finalized?.summary || null,
+        error: loopError ? loopError.message : null,
+        status: terminalStatus,
+        artifacts: finalized ? [{ kind: 'mp4', absPath: finalized.outputMp4AbsPath }] : []
+      }
+      try { writeManifest(jobId, manifest) } catch { /* best-effort */ }
+      try { await refreshManifestBytes(jobId) } catch { /* best-effort */ }
 
-    if (ac.signal.aborted) {
-      emit('status', 'cancelled')
-    } else if (finalized) {
-      emit('status', 'done')
-    } else {
-      emit('status', 'error')
+      emit('status', terminalStatus)
     }
   })()
 
-  const cancel = () => {
-    if (ac.signal.aborted) return
-    ac.abort()
-  }
-
+  const cancel = () => { if (!ac.signal.aborted) ac.abort() }
   return { emitter, cancel, workDir, promise: loopPromise }
-}
-
-function truncate(v, max = 2000) {
-  try {
-    const s = typeof v === 'string' ? v : JSON.stringify(v)
-    return s.length > max ? s.slice(0, max) + `…(+${s.length - max}b)` : (typeof v === 'string' ? v : JSON.parse(s))
-  } catch {
-    return '[unserializable]'
-  }
 }

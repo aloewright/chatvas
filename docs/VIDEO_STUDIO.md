@@ -4,18 +4,13 @@ Chatvas ships with an optional Video Studio node powered by [OpenMontage](https:
 
 ## One-time setup
 
-Prereqs on your machine: **Python 3.10+, FFmpeg, Node 18+**. On macOS:
-```
-brew install python@3.11 ffmpeg node
-```
-
-Then from the chatvas repo:
+Only prereq on your machine: **Node 18+**. Python and FFmpeg are bundled automatically.
 
 ```bash
 git submodule update --init --recursive
-npm install
-npm run setup:video      # creates vendor/OpenMontage/.venv, installs Python + Remotion deps (~5-10 min)
-npm run doctor           # verify everything is green
+npm install                # also downloads Python + ffmpeg binaries (~300 MB total)
+npm run setup:video        # creates OpenMontage's venv and installs its deps (~5-10 min)
+npm run doctor             # verify everything is green
 ```
 
 Open chatvas, click ⚙ in the toolbar, and paste at least `ANTHROPIC_API_KEY`. Add premium provider keys you want the agent to use — FAL_KEY, RUNWAY_API_KEY, HEYGEN_API_KEY, ELEVENLABS_API_KEY, SUNO_API_KEY — whichever apply.
@@ -54,7 +49,9 @@ Rendered videos live at `<userData>/renders/<jobId>/` with `out.mp4`, `manifest.
 
 Run `npm run doctor` or open the Settings drawer — the system-check panel explains which step is broken. Common issues:
 
-- **ffmpeg not found** — install via your package manager and re-run `npm run doctor`.
-- **bootstrap incomplete** — re-run `npm run setup:video`. Safe to run multiple times.
+- **Bundled Python missing** — run `npm install` (the postinstall step downloads a [python-build-standalone](https://github.com/astral-sh/python-build-standalone) tarball into `vendor/python-runtime/`). If that failed, run `npm run install:python` directly.
+- **Bundled ffmpeg missing** — `npm install` pulls `ffmpeg-static` and `ffprobe-static`. Reinstall if those folders are empty.
+- **Bootstrap incomplete** — re-run `npm run setup:video`. Safe to run multiple times.
 - **Python venv broken** — `rm -rf vendor/OpenMontage/.venv` and re-run setup.
 - **Anthropic rate limit** — switch to Sonnet in Settings → Orchestrator model.
+- **Secure storage unavailable (Linux)** — Settings shows a warning if the OS keyring (gnome-keyring/kwallet) is absent. Install one, or keys will be written in plaintext under `<userData>/secrets.json`.

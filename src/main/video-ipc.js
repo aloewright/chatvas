@@ -5,12 +5,15 @@ import { fileURLToPath } from 'node:url'
 import { nanoid } from 'nanoid'
 import { spawnSync } from 'node:child_process'
 
-import { getSecret, setSecret, getSecretStatus, getModel, PROVIDER_KEYS } from './secrets.js'
+import { getSecret, setSecret, getSecretStatus, getModel, isSecureStorage, PROVIDER_KEYS } from './secrets.js'
 import { listPipelinesAndTools } from './python-bridge.js'
 import { startVideoJob } from './video-agent.js'
 import { jobDir, readEvents, listJobs, deleteJob, enforceQuota, totalSize } from './artifact-store.js'
+import { runtimeReport, bundledPython, bundledFfmpeg, bundledFfprobe } from './runtimes.js'
 
-const jobs = new Map() // jobId -> { emitter, cancel, status, artifacts, windowId }
+const jobs = new Map() // jobId -> { emitter, cancel, status, artifacts, workDir }
+const TERMINAL = new Set(['done', 'error', 'cancelled'])
+const TOMBSTONE_MS = 60_000
 
 export function registerVideoIpc({ getMainWindow }) {
   let registryCache = null
@@ -19,6 +22,24 @@ export function registerVideoIpc({ getMainWindow }) {
     if (!force && registryCache) return registryCache
     registryCache = await listPipelinesAndTools()
     return registryCache
+  }
+
+  function invalidateRegistry() {
+    registryCache = null
+    const win = getMainWindow()
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('video:registry-invalidated', { ts: Date.now() })
+    }
+  }
+
+  function cleanupJob(jobId) {
+    const entry = jobs.get(jobId)
+    if (!entry) return
+    try { entry.emitter?.removeAllListeners() } catch { /* ignore */ }
+    entry.artifacts = []
+    entry.emitter = null
+    entry.cancel = null
+    jobs.delete(jobId)
   }
 
   ipcMain.handle('video:listPipelines', async () => {
@@ -57,7 +78,13 @@ export function registerVideoIpc({ getMainWindow }) {
     }
     handle.emitter.on('event', (evt) => {
       if (evt.type === 'artifact') entry.artifacts.push(evt.payload)
-      if (evt.type === 'status' && typeof evt.payload === 'string') entry.status = evt.payload
+      if (evt.type === 'status' && typeof evt.payload === 'string') {
+        entry.status = evt.payload
+        if (TERMINAL.has(evt.payload)) {
+          // Keep a short tombstone so late video:getJob calls can still hit in-memory state.
+          setTimeout(() => cleanupJob(jobId), TOMBSTONE_MS).unref?.()
+        }
+      }
     })
     handle.promise.catch((e) => {
       entry.status = 'error'
@@ -78,7 +105,7 @@ export function registerVideoIpc({ getMainWindow }) {
   ipcMain.handle('video:cancel', (_e, { jobId }) => {
     const entry = jobs.get(jobId)
     if (!entry) return { ok: false, error: 'unknown job' }
-    entry.cancel()
+    entry.cancel?.()
     return { ok: true }
   })
 
@@ -96,9 +123,10 @@ export function registerVideoIpc({ getMainWindow }) {
     // Completed job — reconstruct from disk.
     const events = readEvents(jobId)
     if (events.length === 0) return null
+    const terminal = [...events].reverse().find((e) => e.type === 'status')?.payload
     return {
       jobId,
-      status: events.findLast?.((e) => e.type === 'status')?.payload || 'done',
+      status: terminal || 'done',
       events,
       artifacts: events.filter((e) => e.type === 'artifact').map((e) => e.payload),
       workDir: jobDir(jobId)
@@ -106,13 +134,20 @@ export function registerVideoIpc({ getMainWindow }) {
   })
 
   ipcMain.handle('video:doctor', async () => {
+    const rt = runtimeReport()
     const report = {
-      python: checkCommand(['python3', '--version']) || checkCommand(['python', '--version']),
-      ffmpeg: checkCommand(['ffmpeg', '-version']),
+      python: rt.python,
+      ffmpeg: rt.ffmpeg,
+      ffprobe: rt.ffprobe,
+      missing: rt.missing,
+      packaged: rt.packaged,
       node: process.version,
+      pythonVersion: checkVersion(bundledPython(), ['--version']),
+      ffmpegVersion: checkVersion(bundledFfmpeg(), ['-version']),
       setupComplete: existsSync(join(omRootPath(), '.chatvas-bootstrap-ok')),
       submoduleReady: existsSync(join(omRootPath(), 'requirements.txt')),
       secrets: getSecretStatus(),
+      secureStorage: isSecureStorage(),
       model: getModel()
     }
     try {
@@ -129,15 +164,16 @@ export function registerVideoIpc({ getMainWindow }) {
   })
 
   ipcMain.handle('video:getKey', (_e, { name }) => {
-    // Only returns presence (boolean), not the value.
-    if (!PROVIDER_KEYS.includes(name) && name !== '__MODEL__') return { present: false }
+    // Provider keys: return presence only (never the secret).
+    // __MODEL__ is not a secret — return the actual value so the UI can display it.
     if (name === '__MODEL__') return { present: true, value: getModel() }
+    if (!PROVIDER_KEYS.includes(name)) return { present: false }
     return { present: !!getSecret(name) }
   })
 
   ipcMain.handle('video:setKey', (_e, { name, value }) => {
     setSecret(name, value)
-    if (name === 'ANTHROPIC_API_KEY' || name === '__MODEL__') registryCache = null
+    if (name === 'ANTHROPIC_API_KEY' || name === '__MODEL__') invalidateRegistry()
     return { ok: true }
   })
 
@@ -148,33 +184,51 @@ export function registerVideoIpc({ getMainWindow }) {
     return { ok: existsSync(target) }
   })
 
-  ipcMain.handle('video:listRenders', () => {
-    return { jobs: listJobs(), totalBytes: totalSize() }
+  // Returns a chatvas-media:// URL backed by a privileged scheme registered in main/index.js.
+  // Handles Windows paths correctly via URL encoding.
+  ipcMain.handle('video:getFileUrl', (_e, { path }) => {
+    if (!path || !existsSync(path)) return { url: null, error: 'not found' }
+    const encoded = encodeURIComponent(path)
+    return { url: `chatvas-media://media/${encoded}` }
+  })
+
+  ipcMain.handle('video:listRenders', async () => {
+    const items = await listJobs()
+    const total = await totalSize()
+    return { jobs: items, totalBytes: total }
   })
 
   ipcMain.handle('video:deleteRender', (_e, { jobId }) => {
+    if (jobs.has(jobId)) return { ok: false, error: 'job is active' }
     deleteJob(jobId)
     return { ok: true }
   })
 
-  ipcMain.handle('video:enforceQuota', (_e, { quotaGb }) => {
-    return enforceQuota(quotaGb || 20)
+  ipcMain.handle('video:enforceQuota', async (_e, { quotaGb }) => {
+    const exclude = new Set()
+    for (const [jobId, entry] of jobs.entries()) {
+      if (!TERMINAL.has(entry.status)) exclude.add(jobId)
+    }
+    return enforceQuota(typeof quotaGb === 'number' ? quotaGb : 20, exclude)
   })
 
   app.on('before-quit', () => {
-    for (const entry of jobs.values()) {
-      try { entry.cancel() } catch { /* ignore */ }
+    for (const [jobId, entry] of jobs.entries()) {
+      try { entry.cancel?.() } catch { /* ignore */ }
+      cleanupJob(jobId)
     }
   })
 }
 
 function omRootPath() {
-  // Resolve from main file location: src/main/video-ipc.js -> project root/vendor/OpenMontage
   return fileURLToPath(new URL('../../vendor/OpenMontage', import.meta.url))
 }
 
-function checkCommand(cmd) {
-  const res = spawnSync(cmd[0], cmd.slice(1), { stdio: ['ignore', 'pipe', 'pipe'] })
-  if (res.error || res.status !== 0) return null
-  return (res.stdout || res.stderr).toString().trim().split('\n')[0]
+function checkVersion(path, args) {
+  if (!path || !existsSync(path)) return null
+  try {
+    const res = spawnSync(path, args, { stdio: ['ignore', 'pipe', 'pipe'] })
+    if (res.status !== 0) return null
+    return (res.stdout || res.stderr).toString().trim().split('\n')[0]
+  } catch { return null }
 }

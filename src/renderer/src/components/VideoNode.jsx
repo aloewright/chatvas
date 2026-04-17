@@ -8,23 +8,39 @@ function VideoNode({ id, data }) {
   const [pipelineId, setPipelineId] = useState('')
   const [prompt, setPrompt] = useState(data.initialPrompt || '')
   const [tab, setTab] = useState('prompt')
+  const [mp4Url, setMp4Url] = useState(null)
   const textareaRef = useRef(null)
   const job = useVideoJob()
 
   const parentContext = data.parentContext || null
 
-  useEffect(() => {
-    let cancelled = false
-    window.electronAPI?.video.listPipelines().then((res) => {
-      if (cancelled) return
-      setPipelines(res.pipelines || [])
-    }).catch(() => { /* silent; user hits doctor */ })
-    return () => { cancelled = true }
+  const loadPipelines = useCallback(async () => {
+    try {
+      const res = await window.electronAPI?.video.listPipelines()
+      if (res?.pipelines) setPipelines(res.pipelines)
+    } catch { /* silent; user sees issue in doctor */ }
   }, [])
 
-  const mp4Artifact = useMemo(() => {
-    return [...job.artifacts].reverse().find((a) => a.kind === 'mp4')
-  }, [job.artifacts])
+  useEffect(() => {
+    loadPipelines()
+    const off = window.electronAPI?.video.onRegistryInvalidated?.(() => loadPipelines())
+    return () => off?.()
+  }, [loadPipelines])
+
+  const mp4Artifact = useMemo(
+    () => job.artifacts.findLast?.((a) => a.kind === 'mp4') ?? [...job.artifacts].reverse().find((a) => a.kind === 'mp4'),
+    [job.artifacts]
+  )
+
+  // Request a safe file URL from the main process (handles Windows paths + registered file protocol).
+  useEffect(() => {
+    let cancelled = false
+    if (!mp4Artifact?.absPath) { setMp4Url(null); return }
+    window.electronAPI?.video.getFileUrl(mp4Artifact.absPath).then((res) => {
+      if (!cancelled) setMp4Url(res?.url || null)
+    })
+    return () => { cancelled = true }
+  }, [mp4Artifact?.absPath])
 
   useEffect(() => {
     if (mp4Artifact && tab === 'stream') setTab('output')
@@ -34,7 +50,7 @@ function VideoNode({ id, data }) {
     if (!prompt.trim()) return
     setTab('stream')
     await job.start({ nodeId: id, prompt, pipelineId: pipelineId || null, parentContext })
-  }, [prompt, pipelineId, parentContext, id, job])
+  }, [prompt, pipelineId, parentContext, id, job.start])
 
   const onKeyDown = useCallback((e) => {
     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
@@ -43,28 +59,23 @@ function VideoNode({ id, data }) {
     }
   }, [onSubmit])
 
+  const parentSummary = useMemo(() => {
+    if (job.status === 'done') return 'Completed'
+    if (job.artifacts.some((a) => a.source === 'finalize')) return 'Finalized'
+    return 'In progress'
+  }, [job.status, job.artifacts])
+
   const onBranch = useCallback(() => {
     if (!data.onBranch) return
-    const summary = [...job.events]
-      .reverse()
-      .find((e) => e.type === 'log' && typeof e.payload?.text === 'string' && e.payload.text.startsWith('loop finished'))
-      ? 'Completed'
-      : (job.artifacts.find((a) => a.source === 'finalize') ? 'Finalized' : 'In progress')
     data.onBranch({
       kind: 'video',
       parentJobId: job.jobId,
       parentPrompt: prompt,
-      parentSummary: summary
+      parentSummary
     }, id)
-  }, [data, job.jobId, job.events, job.artifacts, prompt, id])
+  }, [data.onBranch, job.jobId, prompt, parentSummary, id])
 
-  const statusLabel = {
-    idle: 'idle',
-    running: 'running',
-    done: 'done',
-    error: 'error',
-    cancelled: 'cancelled'
-  }[job.status] || job.status
+  const statusLabel = job.status
 
   return (
     <div className="video-node">
@@ -153,9 +164,9 @@ function VideoNode({ id, data }) {
 
         {tab === 'output' && (
           <div className="video-node-output">
-            {mp4Artifact ? (
+            {mp4Artifact && mp4Url ? (
               <>
-                <video controls src={`file://${mp4Artifact.absPath}`} />
+                <video controls src={mp4Url} />
                 <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
                   <button className="vs-btn secondary" onClick={job.openFolder}>Open in folder</button>
                 </div>
@@ -195,9 +206,7 @@ function renderEvent(e) {
     case 'tool_call_start':
       return `→ ${p.tool}(${JSON.stringify(p.args).slice(0, 200)})`
     case 'tool_call_end':
-      return p.ok
-        ? `✓ ${p.tool}`
-        : `✗ ${p.tool}: ${p.error || 'failed'}`
+      return p.ok ? `✓ ${p.tool}` : `✗ ${p.tool}: ${p.error || 'failed'}`
     case 'render_progress':
       return `render ${p.pct}%${p.message ? ` — ${p.message}` : ''}`
     case 'status':
@@ -208,6 +217,8 @@ function renderEvent(e) {
       return (p?.text || '').trim()
     case 'agent_tool_use':
       return `[sdk] ${p.name}(${JSON.stringify(p.input).slice(0, 120)})`
+    case 'loop_finished':
+      return `✅ loop finished (turns=${p.turns ?? '?'})`
     default:
       return JSON.stringify(p)
   }

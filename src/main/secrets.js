@@ -1,6 +1,7 @@
 import { app, safeStorage } from 'electron'
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from 'node:fs'
+import { dirname, join, delimiter } from 'node:path'
+import { ffmpegBinPathFragment } from './runtimes.js'
 
 // Canonical list of keys the Video Studio understands.
 // Anthropic is required; everything else unlocks a provider.
@@ -25,43 +26,47 @@ export const PSEUDO_KEYS = ['__MODEL__']
 const VALID_KEYS = new Set([...PROVIDER_KEYS, ...PSEUDO_KEYS])
 const DEFAULT_MODEL = 'claude-opus-4-7'
 
+let _warnedNoEncryption = false
+
 function secretsPath() {
   return join(app.getPath('userData'), 'secrets.json')
+}
+
+function encryptionAvailable() {
+  try { return safeStorage.isEncryptionAvailable() } catch { return false }
 }
 
 function readBlob() {
   const p = secretsPath()
   if (!existsSync(p)) return {}
-  try {
-    return JSON.parse(readFileSync(p, 'utf-8'))
-  } catch {
-    return {}
-  }
+  try { return JSON.parse(readFileSync(p, 'utf-8')) } catch { return {} }
 }
 
 function writeBlob(blob) {
   const p = secretsPath()
   mkdirSync(dirname(p), { recursive: true })
   writeFileSync(p, JSON.stringify(blob, null, 2), { mode: 0o600 })
+  // `mode` is only honored on create — chmod on every write so an older file with
+  // looser permissions gets tightened.
+  try { chmodSync(p, 0o600) } catch { /* best-effort on non-POSIX */ }
 }
 
 function encrypt(value) {
-  if (typeof value !== 'string') return null
-  if (safeStorage.isEncryptionAvailable()) {
+  if (typeof value !== 'string' || value.length === 0) return null
+  if (encryptionAvailable()) {
     return { enc: 'safeStorage', data: safeStorage.encryptString(value).toString('base64') }
   }
-  // Fallback: plaintext. Better than losing the value silently.
+  if (!_warnedNoEncryption) {
+    console.warn('[secrets] safeStorage encryption unavailable — secrets will be stored in plaintext. Install gnome-keyring or kwallet for encrypted storage on Linux.')
+    _warnedNoEncryption = true
+  }
   return { enc: 'plain', data: value }
 }
 
 function decrypt(entry) {
   if (!entry) return null
-  if (entry.enc === 'safeStorage' && safeStorage.isEncryptionAvailable()) {
-    try {
-      return safeStorage.decryptString(Buffer.from(entry.data, 'base64'))
-    } catch {
-      return null
-    }
+  if (entry.enc === 'safeStorage' && encryptionAvailable()) {
+    try { return safeStorage.decryptString(Buffer.from(entry.data, 'base64')) } catch { return null }
   }
   if (entry.enc === 'plain') return entry.data
   return null
@@ -69,8 +74,7 @@ function decrypt(entry) {
 
 export function getSecret(name) {
   if (!VALID_KEYS.has(name)) return null
-  const blob = readBlob()
-  return decrypt(blob[name])
+  return decrypt(readBlob()[name])
 }
 
 export function setSecret(name, value) {
@@ -84,26 +88,38 @@ export function setSecret(name, value) {
   writeBlob(blob)
 }
 
-// Booleans only — safe to return to the renderer.
+// Cheap presence check — does not decrypt. Safe to return to the renderer.
 export function getSecretStatus() {
   const blob = readBlob()
   const status = {}
-  for (const k of PROVIDER_KEYS) status[k] = !!decrypt(blob[k])
+  for (const k of PROVIDER_KEYS) {
+    const entry = blob[k]
+    status[k] = !!(entry && entry.data)
+  }
   return status
+}
+
+// Whether the OS keyring / safeStorage backend is active. Renderer shows a warning if false.
+export function isSecureStorage() {
+  return encryptionAvailable()
 }
 
 export function getModel() {
   return getSecret('__MODEL__') || DEFAULT_MODEL
 }
 
-// Compose a complete env dict for a child process: merges OpenMontage .env fallback
-// with in-memory secrets. Returns an object suitable for spawn({ env }).
+// Compose a complete env dict for a child process: merges in-memory secrets and prepends
+// the bundled ffmpeg/ffprobe dirs to PATH so OpenMontage tools find them.
 export function buildChildEnv(extra = {}) {
   const blob = readBlob()
   const env = { ...process.env }
   for (const k of PROVIDER_KEYS) {
     const v = decrypt(blob[k])
     if (v) env[k] = v
+  }
+  const fragment = ffmpegBinPathFragment()
+  if (fragment) {
+    env.PATH = env.PATH ? `${fragment}${delimiter}${env.PATH}` : fragment
   }
   return { ...env, ...extra }
 }
