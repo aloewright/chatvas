@@ -1,0 +1,111 @@
+.bootstrap-scrim {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.75);
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px;
+}
+
+.bootstrap-modal {
+  width: 680px;
+  max-width: 100%;
+  max-height: 90vh;
+  background: var(--bg-node);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 22px 26px;
+  color: var(--text);
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
+}
+
+.bootstrap-modal h2 {
+  font-size: 16px;
+  margin: 0 0 6px 0;
+}
+
+.bootstrap-sub {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin: 0 0 18px 0;
+  line-height: 1.5;
+}
+
+.bootstrap-step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text);
+  margin-bottom: 12px;
+  font-weight: 500;
+}
+
+.bootstrap-spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--btn-border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: bootstrap-spin 0.8s linear infinite;
+}
+
+@keyframes bootstrap-spin { to { transform: rotate(360deg) } }
+
+.bootstrap-log {
+  flex: 1;
+  background: var(--bg-canvas);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 10px;
+  color: var(--text-muted);
+  overflow: auto;
+  max-height: 340px;
+  min-height: 160px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  margin: 0;
+}
+
+.bootstrap-error {
+  color: #e5484d;
+  background: rgba(229, 72, 77, 0.08);
+  border: 1px solid rgba(229, 72, 77, 0.4);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 8px 0;
+  font-size: 13px;
+}
+
+.bootstrap-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 14px;
+  justify-content: flex-end;
+}
+
+.bootstrap-btn {
+  padding: 8px 16px;
+  border: 1px solid var(--btn-border);
+  background: var(--btn-bg);
+  color: var(--text);
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.bootstrap-btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+
+.bootstrap-btn.primary:hover { background: var(--accent-hover) }

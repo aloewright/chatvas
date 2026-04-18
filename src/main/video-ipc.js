@@ -9,14 +9,56 @@ import { getSecret, setSecret, getSecretStatus, getModel, isSecureStorage, PROVI
 import { listPipelinesAndTools } from './python-bridge.js'
 import { startVideoJob } from './video-agent.js'
 import { jobDir, readEvents, listJobs, deleteJob, enforceQuota, totalSize } from './artifact-store.js'
-import { runtimeReport, bundledPython, bundledFfmpeg, bundledFfprobe } from './runtimes.js'
+import { runtimeReport, bundledPython, bundledFfmpeg, bundledFfprobe, omWorkingRoot } from './runtimes.js'
+import { FirstRunBootstrapper, isBootstrapped, bootstrapMarkerPath } from './first-run.js'
 
 const jobs = new Map() // jobId -> { emitter, cancel, status, artifacts, workDir }
 const TERMINAL = new Set(['done', 'error', 'cancelled'])
 const TOMBSTONE_MS = 60_000
 
+let bootstrapper = null // singleton — at most one bootstrap at a time
+
 export function registerVideoIpc({ getMainWindow }) {
   let registryCache = null
+
+  function sendBootstrap(evt) {
+    const win = getMainWindow()
+    if (!win || win.isDestroyed()) return
+    win.webContents.send('bootstrap:stream', evt)
+  }
+
+  function ensureBootstrapper() {
+    if (bootstrapper) return bootstrapper
+    bootstrapper = new FirstRunBootstrapper()
+    bootstrapper.on('event', sendBootstrap)
+    return bootstrapper
+  }
+
+  ipcMain.handle('bootstrap:status', () => {
+    const done = isBootstrapped()
+    return {
+      done,
+      running: !!bootstrapper?.running,
+      error: bootstrapper?.error?.message || null,
+      markerPath: bootstrapMarkerPath(),
+      workingRoot: omWorkingRoot()
+    }
+  })
+
+  ipcMain.handle('bootstrap:start', async () => {
+    if (isBootstrapped()) return { ok: true, alreadyDone: true }
+    const b = ensureBootstrapper()
+    if (b.running) return { ok: true, alreadyRunning: true }
+    b.run().catch(() => { /* error event already emitted */ })
+    return { ok: true }
+  })
+
+  ipcMain.handle('bootstrap:retry', async () => {
+    bootstrapper = null
+    const b = ensureBootstrapper()
+    b.run().catch(() => {})
+    return { ok: true }
+  })
 
   async function getRegistry(force = false) {
     if (!force && registryCache) return registryCache

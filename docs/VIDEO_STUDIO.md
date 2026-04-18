@@ -2,15 +2,26 @@
 
 Chatvas ships with an optional Video Studio node powered by [OpenMontage](https://github.com/calesthio/OpenMontage). You describe a video in plain language, and an embedded Claude agent orchestrates OpenMontage's Python toolchain and Remotion composer to produce an MP4 inline in the node.
 
-## One-time setup
+## End users (installed `.dmg` / `.AppImage` / `.exe`)
 
-Only prereq on your machine: **Node 18+**. Python and FFmpeg are bundled automatically.
+Zero prereqs. On first launch the app shows a one-time **"Video Studio setup"** overlay that:
+
+1. Copies OpenMontage into your user data dir (`~/Library/Application Support/Chat Nodes Canvas/openmontage` on macOS).
+2. Creates a Python venv from the bundled Python.
+3. Installs OpenMontage's Python dependencies (5–10 min, depending on bandwidth).
+
+When the overlay disappears, open the Settings drawer (⚙), paste `ANTHROPIC_API_KEY`, and start generating videos.
+
+## Developers (running from the repo)
+
+Only prereq: **Node 18+**. Python and FFmpeg are downloaded automatically by `npm install`.
 
 ```bash
 git submodule update --init --recursive
-npm install                # also downloads Python + ffmpeg binaries (~300 MB total)
-npm run setup:video        # creates OpenMontage's venv and installs its deps (~5-10 min)
-npm run doctor             # verify everything is green
+npm install                # downloads Python + ffmpeg-static + ffprobe-static + composer deps (~400 MB)
+npm run dev                # first-launch overlay runs bootstrap automatically; or run it up front:
+npm run setup:video        # optional pre-bootstrap (same logic; skip if you're OK waiting for the UI)
+npm run doctor             # verify runtime state
 ```
 
 Open chatvas, click ⚙ in the toolbar, and paste at least `ANTHROPIC_API_KEY`. Add premium provider keys you want the agent to use — FAL_KEY, RUNWAY_API_KEY, HEYGEN_API_KEY, ELEVENLABS_API_KEY, SUNO_API_KEY — whichever apply.

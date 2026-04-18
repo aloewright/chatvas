@@ -11,6 +11,7 @@ import '@xyflow/react/dist/style.css'
 import ChatNode from './components/ChatNode'
 import VideoNode from './components/VideoNode'
 import SettingsDrawer from './components/SettingsDrawer'
+import BootstrapOverlay from './components/BootstrapOverlay'
 import themes from './themes'
 
 let nodeIdCounter = 1
@@ -30,6 +31,24 @@ function App() {
   const [themeName, setThemeName] = useState('midnight')
   const theme = themes[themeName]
   const [showSettings, setShowSettings] = useState(false)
+  const [bootstrapDone, setBootstrapDone] = useState(false)
+
+  // Kick off bootstrap on mount if needed. The overlay handles the UX; we only
+  // track completion here so the Video Studio actions know when the toolchain is ready.
+  useEffect(() => {
+    let cancelled = false
+    async function ensure() {
+      const s = await window.electronAPI?.bootstrap?.status()
+      if (cancelled) return
+      if (s?.done) { setBootstrapDone(true); return }
+      if (!s?.running) await window.electronAPI?.bootstrap?.start()
+    }
+    ensure()
+    const off = window.electronAPI?.bootstrap?.onStream((msg) => {
+      if (msg.type === 'done') setBootstrapDone(true)
+    })
+    return () => { cancelled = true; off?.() }
+  }, [])
 
   useEffect(() => {
     const root = document.documentElement
@@ -300,6 +319,7 @@ function App() {
       </ReactFlow>
 
       {showSettings && <SettingsDrawer onClose={() => setShowSettings(false)} />}
+      <BootstrapOverlay onDone={() => setBootstrapDone(true)} />
     </div>
   )
 }

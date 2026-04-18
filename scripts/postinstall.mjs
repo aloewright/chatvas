@@ -30,7 +30,9 @@ console.log('[postinstall] updating git submodules…')
 run('git', ['submodule', 'update', '--init', '--recursive'])
 
 console.log('[postinstall] fetching bundled Python…')
-const ok = run(process.execPath, [resolve(__dirname, 'install-python.mjs')])
-if (!ok) {
-  console.warn('[postinstall] Python download failed — you can retry with `npm run install:python`.')
-}
+const pyOk = run(process.execPath, [resolve(__dirname, 'install-python.mjs')])
+if (!pyOk) console.warn('[postinstall] Python download failed — you can retry with `npm run install:python`.')
+
+console.log('[postinstall] installing Remotion composer deps…')
+const composerOk = run(process.execPath, [resolve(__dirname, 'install-composer-deps.mjs')])
+if (!composerOk) console.warn('[postinstall] composer install failed — video rendering may not work until fixed.')

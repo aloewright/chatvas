@@ -70,6 +70,20 @@
         "from": "vendor/python-runtime",
         "to": "python-runtime",
         "filter": ["**/*"]
+      },
+      {
+        "from": "vendor/OpenMontage",
+        "to": "OpenMontage",
+        "filter": [
+          "**/*",
+          "!**/.git/**",
+          "!**/.venv/**",
+          "!**/__pycache__/**",
+          "!**/*.pyc",
+          "!**/.chatvas-bootstrap-ok",
+          "!**/tests/**",
+          "!**/.github/**"
+        ]
       }
     ],
     "win": {

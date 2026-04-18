@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 
 const VIDEO_STREAM = 'video:stream'
 const REGISTRY_INVALIDATED = 'video:registry-invalidated'
+const BOOTSTRAP_STREAM = 'bootstrap:stream'
 
 contextBridge.exposeInMainWorld('electronAPI', {
   // --- ChatGPT branching (existing) ---
@@ -44,5 +45,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
     status: () => ipcRenderer.invoke('video:doctor').then((r) => r.secrets),
     get: (name) => ipcRenderer.invoke('video:getKey', { name }),
     set: (name, value) => ipcRenderer.invoke('video:setKey', { name, value })
+  },
+
+  bootstrap: {
+    status: () => ipcRenderer.invoke('bootstrap:status'),
+    start: () => ipcRenderer.invoke('bootstrap:start'),
+    retry: () => ipcRenderer.invoke('bootstrap:retry'),
+    onStream: (cb) => {
+      const handler = (_e, msg) => cb(msg)
+      ipcRenderer.on(BOOTSTRAP_STREAM, handler)
+      return () => ipcRenderer.removeListener(BOOTSTRAP_STREAM, handler)
+    }
   }
 })

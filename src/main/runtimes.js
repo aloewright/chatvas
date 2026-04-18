@@ -38,6 +38,39 @@ export function pythonRuntimeRoot() {
   return join(repoRoot(), 'vendor', 'python-runtime', triple)
 }
 
+// OpenMontage source root: read-only resourcesPath copy in packaged mode, repo submodule in dev.
+export function omSourceRoot() {
+  if (isPackaged()) return join(process.resourcesPath, 'OpenMontage')
+  return join(repoRoot(), 'vendor', 'OpenMontage')
+}
+
+// OpenMontage working root: writable copy. userData/openmontage in packaged mode
+// (for venv + any generated files), same as source in dev.
+export function omWorkingRoot() {
+  if (isPackaged()) {
+    try {
+      const { app } = require('electron')
+      return join(app.getPath('userData'), 'openmontage')
+    } catch {
+      return join(process.resourcesPath, 'OpenMontage')
+    }
+  }
+  return join(repoRoot(), 'vendor', 'OpenMontage')
+}
+
+export function adapterSourceRoot() {
+  if (isPackaged()) return join(process.resourcesPath, 'vendor', 'OpenMontage-adapter')
+  return join(repoRoot(), 'vendor', 'OpenMontage-adapter')
+}
+
+// Where the OpenMontage venv lives (always under the writable working root).
+export function omVenvPython() {
+  const root = omWorkingRoot()
+  return IS_WIN
+    ? join(root, '.venv', 'Scripts', 'python.exe')
+    : join(root, '.venv', 'bin', 'python')
+}
+
 // python-build-standalone install_only layout: python/bin/python3 on unix, python/python.exe on Windows.
 export function bundledPython() {
   const root = pythonRuntimeRoot()

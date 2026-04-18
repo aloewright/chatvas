@@ -5,27 +5,18 @@ import readline from 'node:readline'
 import { randomUUID } from 'node:crypto'
 import treeKill from 'tree-kill'
 import { buildChildEnv } from './secrets.js'
-import { bundledPython, repoRoot } from './runtimes.js'
+import { bundledPython, omWorkingRoot, omVenvPython, adapterSourceRoot } from './runtimes.js'
 
 // Persistent `run_tool.py` subprocess per bridge instance. JSON-lines stdio.
 // One bridge per video job; auto-torn-down on cancel or main process exit.
 
-function omRoot() { return join(repoRoot(), 'vendor', 'OpenMontage') }
-function adapterPath(file) { return join(repoRoot(), 'vendor', 'OpenMontage-adapter', file) }
-
-// The OpenMontage venv is created from the bundled Python at bootstrap time.
-// Path layout mirrors `python -m venv`'s output.
-function venvPython() {
-  const om = omRoot()
-  return process.platform === 'win32'
-    ? join(om, '.venv', 'Scripts', 'python.exe')
-    : join(om, '.venv', 'bin', 'python')
-}
+function omRoot() { return omWorkingRoot() }
+function adapterPath(file) { return join(adapterSourceRoot(), file) }
 
 function resolvePythonForBridge() {
   // Prefer the OpenMontage venv (it has OpenMontage's deps). Fall back to the bundled interpreter
   // so e.g. list_pipelines can still report whether discovery is possible.
-  const venv = venvPython()
+  const venv = omVenvPython()
   if (existsSync(venv)) return { path: venv, source: 'venv' }
   const bundled = bundledPython()
   if (existsSync(bundled)) return { path: bundled, source: 'bundled' }
@@ -52,11 +43,11 @@ export class PythonBridge {
     const { path: py, source } = resolvePythonForBridge()
     if (!py) {
       return Promise.reject(new Error(
-        `Python not found. Run \`npm install\` (bundles Python) then \`npm run setup:video\` (creates the OpenMontage venv).`
+        `Python not found. Install completion may be incomplete — try reinstalling the app.`
       ))
     }
     if (source === 'bundled') {
-      this.onLog('[bridge] using bundled Python (no OpenMontage venv). Run `npm run setup:video` to install OpenMontage deps.\n')
+      this.onLog('[bridge] using bundled Python (no OpenMontage venv). First-run bootstrap will populate it.\n')
     }
 
     const script = adapterPath('run_tool.py')
@@ -204,7 +195,7 @@ export function listPipelinesAndTools() {
     const { path: py, source } = resolvePythonForBridge()
     if (!py) {
       return rejectPromise(new Error(
-        'Python not installed. Run `npm install` (bundles Python) and then `npm run setup:video`.'
+        'Python not installed. The app install is incomplete — reinstall or run `npm install` from source.'
       ))
     }
     const env = buildChildEnv({ PYTHONPATH: omRoot(), PYTHONUNBUFFERED: '1' })
