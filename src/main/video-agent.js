@@ -117,7 +117,7 @@ export function startVideoJob({ jobId, prompt, pipelineId, parentContext, abortS
     const evt = { jobId, ts: Date.now(), type, payload }
     try { appendEvent(jobId, evt) } catch { /* disk full? ignore */ }
     try { onEvent?.(evt) } catch { /* renderer gone */ }
-    emitter.emit('event', evt)
+    try { emitter.emit('event', evt) } catch { /* subscriber threw — don't break the job */ }
   }
 
   const bridge = new PythonBridge({
@@ -218,13 +218,20 @@ export function startVideoJob({ jobId, prompt, pipelineId, parentContext, abortS
       if (!existsSync(path)) {
         return { content: [{ type: 'text', text: `File not found: ${path}` }], is_error: true }
       }
-      let size
-      try { size = statSync(path).size } catch { size = -1 }
-      if (size < 0) return { content: [{ type: 'text', text: `stat failed: ${path}` }], is_error: true }
-      if (size > MAX_READ_BYTES) {
-        return { content: [{ type: 'text', text: `File too large (${size} bytes > ${MAX_READ_BYTES})` }], is_error: true }
+      let st
+      try { st = statSync(path) } catch (e) {
+        return { content: [{ type: 'text', text: `stat failed: ${e.message}` }], is_error: true }
       }
-      const buf = readFileSync(path)
+      if (!st.isFile()) {
+        return { content: [{ type: 'text', text: `Not a regular file: ${path}` }], is_error: true }
+      }
+      if (st.size > MAX_READ_BYTES) {
+        return { content: [{ type: 'text', text: `File too large (${st.size} bytes > ${MAX_READ_BYTES})` }], is_error: true }
+      }
+      let buf
+      try { buf = readFileSync(path) } catch (e) {
+        return { content: [{ type: 'text', text: `read failed: ${e.message}` }], is_error: true }
+      }
       // Coarse binary detection: reject if a NUL byte is in the first 8KB.
       const head = buf.subarray(0, Math.min(buf.length, 8192))
       if (head.includes(0)) {
@@ -353,6 +360,13 @@ export function startVideoJob({ jobId, prompt, pipelineId, parentContext, abortS
       }
       if (!existsSync(outputMp4AbsPath)) {
         return { content: [{ type: 'text', text: `file does not exist: ${outputMp4AbsPath}` }], is_error: true }
+      }
+      let mp4Stat
+      try { mp4Stat = statSync(outputMp4AbsPath) } catch (e) {
+        return { content: [{ type: 'text', text: `cannot stat mp4: ${e.message}` }], is_error: true }
+      }
+      if (!mp4Stat.isFile() || mp4Stat.size === 0) {
+        return { content: [{ type: 'text', text: `mp4 must be a non-empty regular file: ${outputMp4AbsPath} (size=${mp4Stat.size})` }], is_error: true }
       }
       finalized = { outputMp4AbsPath, summary }
       emit('artifact', { kind: 'mp4', absPath: outputMp4AbsPath, source: 'finalize' })

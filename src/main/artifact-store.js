@@ -78,8 +78,10 @@ export async function listJobs() {
   const root = rendersRoot()
   if (!existsSync(root)) return []
   const entries = await readdir(root, { withFileTypes: true })
+  // Filter to conforming jobId names only. Stray/partial/legacy directories are ignored so
+  // enforceQuota doesn't count bytes it can't actually evict (safeJobPath would throw).
   const jobs = await Promise.all(entries
-    .filter((d) => d.isDirectory())
+    .filter((d) => d.isDirectory() && JOB_ID_RE.test(d.name))
     .map(async (d) => {
       const dir = join(root, d.name)
       const manifest = readManifest(d.name)

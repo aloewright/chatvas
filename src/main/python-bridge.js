@@ -35,6 +35,7 @@ export class PythonBridge {
     this.pending = new Map() // id -> { resolve, reject, onProgress }
     this.onLog = onLog || (() => {})
     this.shuttingDown = false
+    this.closed = false
   }
 
   start() {
@@ -135,9 +136,12 @@ export class PythonBridge {
     if (msg.event === 'fatal') {
       const err = new Error(msg.error || 'fatal bridge error')
       err.traceback = msg.traceback
+      this.ready = false
+      this.closed = true
       this._readyReject?.(err)
       for (const { reject } of this.pending.values()) reject(err)
       this.pending.clear()
+      this.stop('SIGTERM')
       return
     }
 
@@ -161,6 +165,7 @@ export class PythonBridge {
   }
 
   async runTool(tool, args, { onProgress, signal } = {}) {
+    if (this.closed) throw new Error('python bridge is closed')
     await this.start()
     if (!this.ready) throw new Error('python bridge not ready')
 
@@ -209,6 +214,8 @@ export class PythonBridge {
 }
 
 // One-shot invocation of `list_pipelines.py`.
+const LIST_PIPELINES_TIMEOUT_MS = 60_000
+
 export function listPipelinesAndTools() {
   return new Promise((resolvePromise, rejectPromise) => {
     const { path: py, source } = resolvePythonForBridge()
@@ -223,18 +230,29 @@ export function listPipelinesAndTools() {
     const child = spawn(py, args, { cwd: omRoot(), env })
     let out = ''
     let err = ''
+    let settled = false
+    const settle = (fn) => { if (settled) return; settled = true; clearTimeout(timeout); fn() }
+    const timeout = setTimeout(() => {
+      if (settled) return
+      try { if (child.pid) treeKill(child.pid, 'SIGTERM', () => {}) } catch { /* ignore */ }
+      settle(() => rejectPromise(new Error(
+        `list_pipelines timed out after ${LIST_PIPELINES_TIMEOUT_MS / 1000}s (stdout=${out.slice(0, 200)} stderr=${err.slice(0, 200)})`
+      )))
+    }, LIST_PIPELINES_TIMEOUT_MS)
     child.stdout.on('data', (c) => { out += c.toString('utf-8') })
     child.stderr.on('data', (c) => { err += c.toString('utf-8') })
-    child.on('error', (e) => rejectPromise(new Error(`list_pipelines spawn failed: ${e.message}`)))
+    child.on('error', (e) => settle(() => rejectPromise(new Error(`list_pipelines spawn failed: ${e.message}`))))
     // Use 'close' rather than 'exit' so stdout/stderr streams finish draining before parse.
     child.on('close', (code) => {
-      if (code === 0) {
-        try { resolvePromise(JSON.parse(out)) } catch (e) {
-          rejectPromise(new Error(`parse error: ${e.message}; stdout=${out.slice(0, 500)}`))
+      settle(() => {
+        if (code === 0) {
+          try { resolvePromise(JSON.parse(out)) } catch (e) {
+            rejectPromise(new Error(`parse error: ${e.message}; stdout=${out.slice(0, 500)}`))
+          }
+        } else {
+          rejectPromise(new Error(`list_pipelines exited ${code}: ${err.slice(0, 500)}`))
         }
-      } else {
-        rejectPromise(new Error(`list_pipelines exited ${code}: ${err.slice(0, 500)}`))
-      }
+      })
     })
   })
 }

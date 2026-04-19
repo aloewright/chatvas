@@ -155,6 +155,12 @@ function CacheSection() {
             <button
               className="vs-btn secondary"
               onClick={async () => {
+                const count = info?.jobs?.length ?? 0
+                if (count === 0) return
+                const ok = window.confirm(
+                  `Delete all ${count} cached render${count === 1 ? '' : 's'} (${gb(info.totalBytes)} GB)? This cannot be undone.`
+                )
+                if (!ok) return
                 await window.electronAPI.video.enforceQuota(0)
                 load()
               }}
