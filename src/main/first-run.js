@@ -1,7 +1,8 @@
-import { existsSync, mkdirSync, cpSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, cpSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import { join, delimiter } from 'node:path'
 import { EventEmitter } from 'node:events'
+import { createRequire } from 'node:module'
 
 import {
   bundledPython,
@@ -14,25 +15,49 @@ import { buildChildEnv } from './secrets.js'
 
 // First-run bootstrap coordinator for the packaged app.
 //
-// Responsibilities (only triggered when the venv is missing):
-// 1. Copy OpenMontage source from read-only resourcesPath to userData (one-time).
+// Responsibilities:
+// 1. Copy OpenMontage source from read-only resourcesPath to userData. Re-copy when
+//    the bundled app version changes (userData tree gets stale on upgrades otherwise).
 // 2. Create a Python venv under userData/openmontage/.venv using the bundled Python.
 // 3. Upgrade pip + wheel.
 // 4. Install OpenMontage's requirements.txt (the slow step — many minutes).
 // 5. Write a marker file so subsequent launches skip all of the above.
 //
 // In dev mode, bootstrap is still invoked if no venv exists, but points at the repo's
-// vendor/OpenMontage/ directory as usual.
+// vendor/OpenMontage/ directory as usual (source === working, so copy is a no-op).
 
-const IS_WIN = process.platform === 'win32'
+const require = createRequire(import.meta.url)
 const MARKER_NAME = '.chatvas-bootstrap-ok'
+const VERSION_NAME = '.bundled-version'
+
+function appVersion() {
+  try {
+    const { app } = require('electron')
+    return app?.getVersion?.() || 'dev'
+  } catch { return 'dev' }
+}
 
 export function bootstrapMarkerPath() {
   return join(omWorkingRoot(), MARKER_NAME)
 }
 
+function versionMarkerPath() {
+  return join(omWorkingRoot(), VERSION_NAME)
+}
+
+function readRecordedVersion() {
+  const p = versionMarkerPath()
+  if (!existsSync(p)) return null
+  try { return readFileSync(p, 'utf-8').trim() } catch { return null }
+}
+
 export function isBootstrapped() {
-  return existsSync(bootstrapMarkerPath()) && existsSync(omVenvPython())
+  if (!existsSync(bootstrapMarkerPath())) return false
+  if (!existsSync(omVenvPython())) return false
+  // If the bundled app version has moved past what's recorded, force a re-bootstrap.
+  const recorded = readRecordedVersion()
+  if (recorded && recorded !== appVersion()) return false
+  return true
 }
 
 function shouldSkipCopy(srcRoot, dstRoot) {
@@ -44,14 +69,30 @@ function copyOpenMontageToUserData(emit) {
   const src = omSourceRoot()
   const dst = omWorkingRoot()
   if (shouldSkipCopy(src, dst)) return
-  if (existsSync(join(dst, 'requirements.txt'))) {
-    emit('log', `[bootstrap] OpenMontage already present at ${dst} — skipping copy`)
+
+  const recorded = readRecordedVersion()
+  const current = appVersion()
+  const hasExistingCopy = existsSync(join(dst, 'requirements.txt'))
+
+  if (hasExistingCopy && recorded === current) {
+    emit('log', `[bootstrap] OpenMontage ${current} already present at ${dst} — skipping copy`)
     return
   }
-  emit('step', { key: 'copy', label: 'Preparing OpenMontage workspace' })
+
+  if (hasExistingCopy) {
+    emit('step', { key: 'migrate', label: `Refreshing OpenMontage (${recorded || 'unknown'} → ${current})` })
+    // Wipe .venv too — requirements.txt may have changed and a stale venv can mis-import.
+    try { rmSync(dst, { recursive: true, force: true }) } catch (e) {
+      emit('log', `[bootstrap] warn: could not remove ${dst}: ${e.message}`)
+    }
+  } else {
+    emit('step', { key: 'copy', label: 'Preparing OpenMontage workspace' })
+  }
+
   mkdirSync(dst, { recursive: true })
   cpSync(src, dst, { recursive: true, force: false })
-  emit('log', `[bootstrap] copied OpenMontage → ${dst}`)
+  writeFileSync(versionMarkerPath(), `${current}\n`)
+  emit('log', `[bootstrap] copied OpenMontage ${current} → ${dst}`)
 }
 
 function runStream(emit, label, cmd, args, opts = {}) {
@@ -61,7 +102,7 @@ function runStream(emit, label, cmd, args, opts = {}) {
     child.stdout.on('data', (c) => emit('log', c.toString('utf-8')))
     child.stderr.on('data', (c) => emit('log', c.toString('utf-8')))
     child.on('error', reject)
-    child.on('exit', (code) => {
+    child.on('close', (code) => {
       if (code === 0) resolve()
       else reject(new Error(`${cmd} ${args.join(' ')} exited ${code}`))
     })
@@ -102,7 +143,7 @@ async function installRequirements(emit) {
 }
 
 function writeMarker() {
-  writeFileSync(bootstrapMarkerPath(), `ok ${new Date().toISOString()}\n`)
+  writeFileSync(bootstrapMarkerPath(), `ok ${new Date().toISOString()} (app ${appVersion()})\n`)
 }
 
 export class FirstRunBootstrapper extends EventEmitter {
@@ -114,14 +155,12 @@ export class FirstRunBootstrapper extends EventEmitter {
     this.log = []
   }
 
-  emitStep(payload) {
-    this.emit('event', { type: 'step', payload })
-  }
+  emitStep(payload) { this.emit('event', { type: 'step', payload }) }
   emitLog(text) {
     if (!text) return
     const line = text.toString()
     this.log.push(line)
-    if (this.log.join('').length > 50_000) this.log = this.log.slice(-200) // cap
+    if (this.log.join('').length > 50_000) this.log = this.log.slice(-200)
     this.emit('event', { type: 'log', payload: line })
   }
 
@@ -152,4 +191,3 @@ export class FirstRunBootstrapper extends EventEmitter {
     }
   }
 }
-

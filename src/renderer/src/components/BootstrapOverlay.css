@@ -69,7 +69,6 @@
   max-height: 340px;
   min-height: 160px;
   white-space: pre-wrap;
-  word-break: break-word;
   overflow-wrap: anywhere;
   margin: 0;
 }

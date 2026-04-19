@@ -14,13 +14,20 @@ export default function BootstrapOverlay({ onDone }) {
   const logRef = useRef(null)
 
   const refreshStatus = useCallback(async () => {
-    const s = await window.electronAPI?.bootstrap?.status()
-    if (!s) { setPhase('idle'); return s }
-    if (s.done) setPhase('done')
-    else if (s.running) setPhase('running')
-    else if (s.error) { setPhase('error'); setError(s.error) }
-    else setPhase('idle')
-    return s
+    try {
+      if (!window.electronAPI?.bootstrap) {
+        setPhase('error'); setError('bootstrap API unavailable'); return null
+      }
+      const s = await window.electronAPI.bootstrap.status()
+      if (!s) { setPhase('idle'); return s }
+      if (s.done) setPhase('done')
+      else if (s.running) setPhase('running')
+      else if (s.error) { setPhase('error'); setError(s.error) }
+      else setPhase('idle')
+      return s
+    } catch (e) {
+      setPhase('error'); setError(e?.message || String(e)); return null
+    }
   }, [])
 
   useEffect(() => {
@@ -44,20 +51,28 @@ export default function BootstrapOverlay({ onDone }) {
 
   const start = useCallback(async () => {
     setLog(''); setError(null); setStep(null); setPhase('running')
-    await window.electronAPI.bootstrap.start()
+    try { await window.electronAPI.bootstrap.start() }
+    catch (e) { setPhase('error'); setError(e?.message || String(e)) }
   }, [])
 
   const retry = useCallback(async () => {
     setLog(''); setError(null); setStep(null); setPhase('running')
-    await window.electronAPI.bootstrap.retry()
+    try { await window.electronAPI.bootstrap.retry() }
+    catch (e) { setPhase('error'); setError(e?.message || String(e)) }
   }, [])
 
   if (phase === 'done' || phase === 'checking') return null
 
   return (
     <div className="bootstrap-scrim">
-      <div className="bootstrap-modal">
-        <h2>Video Studio setup</h2>
+      <div
+        className="bootstrap-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="bootstrap-title"
+        tabIndex="-1"
+      >
+        <h2 id="bootstrap-title">Video Studio setup</h2>
         <p className="bootstrap-sub">
           Installing Python dependencies for OpenMontage. This runs once per install
           and takes 5–10 minutes depending on your connection.

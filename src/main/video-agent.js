@@ -9,14 +9,14 @@ import { query, tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk'
 import { PythonBridge, listPipelinesAndTools } from './python-bridge.js'
 import { getModel, getSecret, buildChildEnv } from './secrets.js'
 import { jobDir, appendEvent, writeManifest, refreshManifestBytes } from './artifact-store.js'
-import { repoRoot } from './runtimes.js'
+import { omWorkingRoot } from './runtimes.js'
 
 const IS_WIN = process.platform === 'win32'
 const MAX_READ_BYTES = 1_000_000           // 1 MB cap on read_file
 const STDERR_TAIL_BYTES = 4096             // bounded ring buffer for render stderr
 const LOG_EVENT_CAP = 2000                 // chars — prevents absurd payloads from drowning the renderer
 
-function omRoot() { return join(repoRoot(), 'vendor', 'OpenMontage') }
+function omRoot() { return omWorkingRoot() }
 
 // Path whitelist: read-only access limited to these prefixes plus the job dir.
 function readableRoots(workDir) {
@@ -274,6 +274,14 @@ export function startVideoJob({ jobId, prompt, pipelineId, parentContext, abortS
           resolvePromise({ content: [{ type: 'text', text: `outputAbsPath must be under job dir ${workDir}` }], is_error: true })
           return
         }
+        if (!isUnder(propsJsonAbsPath, workDir)) {
+          resolvePromise({ content: [{ type: 'text', text: `propsJsonAbsPath must be under job dir ${workDir}` }], is_error: true })
+          return
+        }
+        if (!existsSync(propsJsonAbsPath)) {
+          resolvePromise({ content: [{ type: 'text', text: `props JSON not found: ${propsJsonAbsPath}` }], is_error: true })
+          return
+        }
         // Validate agent-controlled inputs before passing to spawn — no shell metacharacters.
         for (const s of [compositionId, propsJsonAbsPath, outputAbsPath]) {
           if (!SAFE_ARG.test(s)) {
@@ -362,10 +370,10 @@ export function startVideoJob({ jobId, prompt, pipelineId, parentContext, abortS
   const model = getModel()
   const userPrompt = `${prompt.trim()}\n\n(Pipeline hint: ${pipelineId || 'auto — pick one via list_pipelines'})`
 
-  // Run the SDK with a temporarily set ANTHROPIC_API_KEY. The SDK reads it from process.env;
-  // we scope the mutation in a try/finally so concurrent jobs or the rest of the app don't
-  // see a lingering key.
+  // Run the SDK under a process-wide mutex: the Agent SDK reads ANTHROPIC_API_KEY from
+  // process.env and has no options.apiKey, so concurrent jobs would race on env mutation.
   const loopPromise = (async () => {
+    const release = await acquireJobMutex()
     emit('status', 'running')
 
     let terminalStatus = 'error'
@@ -456,9 +464,20 @@ export function startVideoJob({ jobId, prompt, pipelineId, parentContext, abortS
       try { await refreshManifestBytes(jobId) } catch { /* best-effort */ }
 
       emit('status', terminalStatus)
+      release()
     }
   })()
 
   const cancel = () => { if (!ac.signal.aborted) ac.abort() }
   return { emitter, cancel, workDir, promise: loopPromise }
+}
+
+// --- Simple chain-style mutex for ANTHROPIC_API_KEY serialization ---
+let _mutexTail = Promise.resolve()
+function acquireJobMutex() {
+  let release
+  const next = new Promise((resolvePromise) => { release = resolvePromise })
+  const prior = _mutexTail
+  _mutexTail = _mutexTail.then(() => next)
+  return prior.then(() => release)
 }

@@ -61,8 +61,17 @@ export default function SettingsDrawer({ onClose }) {
           <h3>System check</h3>
           {doctor ? (
             <div className="settings-doctor">
-              <div className={doctor.python ? 'ok' : 'fail'}>python: {doctor.python || 'not found'}</div>
-              <div className={doctor.ffmpeg ? 'ok' : 'fail'}>ffmpeg: {doctor.ffmpeg ? 'ok' : 'not found'}</div>
+              {(() => {
+                const missing = new Set(doctor.missing || [])
+                const pythonOk = !missing.has('bundled-python') && !!doctor.python
+                const ffmpegOk = !missing.has('ffmpeg-static') && !!doctor.ffmpeg
+                return (
+                  <>
+                    <div className={pythonOk ? 'ok' : 'fail'}>python: {pythonOk ? doctor.python : 'not found'}</div>
+                    <div className={ffmpegOk ? 'ok' : 'fail'}>ffmpeg: {ffmpegOk ? 'ok' : 'not found'}</div>
+                  </>
+                )
+              })()}
               <div className="ok">node: {doctor.node}</div>
               <div className={doctor.submoduleReady ? 'ok' : 'fail'}>
                 submodule: {doctor.submoduleReady ? 'ok' : 'run `git submodule update --init --recursive`'}

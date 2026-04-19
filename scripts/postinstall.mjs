@@ -27,7 +27,8 @@ if (!hasGit()) {
 }
 
 console.log('[postinstall] updating git submodules…')
-run('git', ['submodule', 'update', '--init', '--recursive'])
+const submoduleOk = run('git', ['submodule', 'update', '--init', '--recursive'])
+if (!submoduleOk) console.warn('[postinstall] submodule update failed — vendor/OpenMontage may be unavailable.')
 
 console.log('[postinstall] fetching bundled Python…')
 const pyOk = run(process.execPath, [resolve(__dirname, 'install-python.mjs')])

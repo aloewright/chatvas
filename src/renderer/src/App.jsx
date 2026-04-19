@@ -237,6 +237,7 @@ function App() {
   }, [registerWebview, unregisterWebview, onBranchStable, onCloseStable, setNodes])
 
   const handleAddRootVideoNode = useCallback(() => {
+    if (!bootstrapDone) return
     const newId = getNextNodeId()
     setNodes((nds) => [
       ...nds,
@@ -257,7 +258,7 @@ function App() {
         dragHandle: '.video-node-header'
       }
     ])
-  }, [registerWebview, unregisterWebview, onBranchStable, onCloseStable, setNodes])
+  }, [bootstrapDone, registerWebview, unregisterWebview, onBranchStable, onCloseStable, setNodes])
 
   const handleNodesDelete = useCallback(
     (deleted) => {
@@ -272,7 +273,12 @@ function App() {
     <div className="app-container">
       <div className="toolbar">
         <button className="add-chat-btn" onClick={handleAddRootChatNode}>+ New Chat</button>
-        <button className="add-chat-btn" onClick={handleAddRootVideoNode} title="Video Studio">🎬 New Video</button>
+        <button
+          className="add-chat-btn"
+          onClick={handleAddRootVideoNode}
+          disabled={!bootstrapDone}
+          title={bootstrapDone ? 'Video Studio' : 'Video Studio setup is still running'}
+        >🎬 New Video</button>
         <button
           className="add-chat-btn"
           onClick={() => setShowSettings(true)}

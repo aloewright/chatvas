@@ -59,6 +59,19 @@ export class PythonBridge {
       stdio: ['pipe', 'pipe', 'pipe']
     })
 
+    this.child.on('error', (e) => {
+      // Fires on spawn failures (ENOENT, EACCES, etc.) before 'exit'.
+      if (this._readyTimeout) { clearTimeout(this._readyTimeout); this._readyTimeout = null }
+      this._readyReject?.(e)
+      for (const { reject } of this.pending.values()) reject(e)
+      this.pending.clear()
+      this.ready = false
+      this.child = null
+      this.readyPromise = null
+      this._readyResolve = null
+      this._readyReject = null
+    })
+
     this.child.stderr.on('data', (chunk) => {
       this.onLog(chunk.toString('utf-8'))
     })
@@ -91,11 +104,17 @@ export class PythonBridge {
       this._readyReject = rejectPromise
       timeout = setTimeout(() => {
         this.readyPromise = null
+        // Kill the child so we don't leave an orphan Python on startup hang.
+        try { if (this.child?.pid) treeKill(this.child.pid, 'SIGTERM', () => {}) } catch { /* ignore */ }
         rejectPromise(new Error('python bridge startup timed out after 60s'))
       }, 60_000)
     })
     this._readyTimeout = timeout
-    this.readyPromise.finally(() => { if (timeout) { clearTimeout(timeout); this._readyTimeout = null } })
+    // .finally() clears the timeout; .catch() suppresses unhandled-rejection warnings when the
+    // caller ignores the returned promise. Legitimate consumers still see the rejection.
+    this.readyPromise
+      .finally(() => { if (timeout) { clearTimeout(timeout); this._readyTimeout = null } })
+      .catch(() => {})
 
     return this.readyPromise
   }
@@ -206,7 +225,9 @@ export function listPipelinesAndTools() {
     let err = ''
     child.stdout.on('data', (c) => { out += c.toString('utf-8') })
     child.stderr.on('data', (c) => { err += c.toString('utf-8') })
-    child.on('exit', (code) => {
+    child.on('error', (e) => rejectPromise(new Error(`list_pipelines spawn failed: ${e.message}`)))
+    // Use 'close' rather than 'exit' so stdout/stderr streams finish draining before parse.
+    child.on('close', (code) => {
       if (code === 0) {
         try { resolvePromise(JSON.parse(out)) } catch (e) {
           rejectPromise(new Error(`parse error: ${e.message}; stdout=${out.slice(0, 500)}`))

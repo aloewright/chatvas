@@ -1,16 +1,33 @@
 import { app } from 'electron'
 import { existsSync, mkdirSync, appendFileSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
 import { readdir, stat } from 'node:fs/promises'
-import { join } from 'node:path'
+import { join, resolve, relative } from 'node:path'
 
 const DEFAULT_QUOTA_GB = 20
 const EVENT_LOG = 'events.ndjson'
 const MANIFEST = 'manifest.json'
 
+// jobId format is produced by video-ipc.js: `job-<ts>-<nanoid(8)>`. Be strict — these
+// paths get rmSync'd, and jobId arrives from the renderer via IPC.
+const JOB_ID_RE = /^job-\d+-[A-Za-z0-9_-]+$/
+
 export function rendersRoot() { return join(app.getPath('userData'), 'renders') }
 
+function safeJobPath(jobId) {
+  if (typeof jobId !== 'string' || !JOB_ID_RE.test(jobId)) {
+    throw new Error(`invalid jobId: ${JSON.stringify(jobId)}`)
+  }
+  const root = resolve(rendersRoot())
+  const target = resolve(root, jobId)
+  const rel = relative(root, target)
+  if (rel.startsWith('..') || rel === '' || rel.includes('..')) {
+    throw new Error(`jobId escapes renders root: ${jobId}`)
+  }
+  return target
+}
+
 export function jobDir(jobId) {
-  const d = join(rendersRoot(), jobId)
+  const d = safeJobPath(jobId)
   mkdirSync(d, { recursive: true })
   mkdirSync(join(d, 'workspace'), { recursive: true })
   return d
@@ -21,7 +38,8 @@ export function appendEvent(jobId, event) {
 }
 
 export function readEvents(jobId) {
-  const p = join(rendersRoot(), jobId, EVENT_LOG)
+  let p
+  try { p = join(safeJobPath(jobId), EVENT_LOG) } catch { return [] }
   if (!existsSync(p)) return []
   return readFileSync(p, 'utf-8')
     .split('\n')
@@ -35,7 +53,8 @@ export function writeManifest(jobId, manifest) {
 }
 
 export function readManifest(jobId) {
-  const p = join(rendersRoot(), jobId, MANIFEST)
+  let p
+  try { p = join(safeJobPath(jobId), MANIFEST) } catch { return null }
   if (!existsSync(p)) return null
   try { return JSON.parse(readFileSync(p, 'utf-8')) } catch { return null }
 }
@@ -77,15 +96,18 @@ export async function totalSize() {
 
 // Update a manifest's cached byte count after a job completes (called by video-agent.js finalize).
 export async function refreshManifestBytes(jobId) {
+  let dir
+  try { dir = safeJobPath(jobId) } catch { return 0 }
   const manifest = readManifest(jobId) || { jobId }
-  const size = await computeDirSize(join(rendersRoot(), jobId))
+  const size = await computeDirSize(dir)
   manifest.bytes = size
   writeManifest(jobId, manifest)
   return size
 }
 
 export function deleteJob(jobId) {
-  const d = join(rendersRoot(), jobId)
+  let d
+  try { d = safeJobPath(jobId) } catch { return }
   if (existsSync(d)) rmSync(d, { recursive: true, force: true })
 }
 

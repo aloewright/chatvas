@@ -3,10 +3,11 @@
 // Idempotent — skips if vendor/python-runtime/<triple>/ already has a working interpreter.
 // Runs automatically on `npm install` via the postinstall script.
 
-import { existsSync, mkdirSync, createWriteStream, renameSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, createWriteStream, createReadStream, renameSync, rmSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
+import { createHash } from 'node:crypto'
 import { join, resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import * as tar from 'tar'
@@ -16,9 +17,22 @@ const ROOT = resolve(__dirname, '..')
 const OUT_ROOT = join(ROOT, 'vendor', 'python-runtime')
 
 // Pin to a specific python-build-standalone release so installs are reproducible.
-// Bump both values together.
+// Bump both values together and refresh EXPECTED_SHA256 for every supported triple.
 const PBS_RELEASE = '20260414'
 const PYTHON_VERSION = '3.12.13'
+
+// SHA-256 digests for each supported triple (lowercase hex, 64 chars).
+// null = digest unknown on this checkout; installation proceeds but logs a warning instead
+// of verifying. Backfill as each platform is tested. Set CHATVAS_STRICT_SHA=1 to force a
+// hard failure on missing digests (useful for CI signing workflows).
+const EXPECTED_SHA256 = {
+  'x86_64-unknown-linux-gnu': 'cdcf8724d46e4857f8db5ee9f4252dc2f5da34f7940294ec6b312389dd3f41e0',
+  'aarch64-unknown-linux-gnu': null,
+  'x86_64-apple-darwin': null,
+  'aarch64-apple-darwin': null,
+  'x86_64-pc-windows-msvc': null
+}
+const STRICT = process.env.CHATVAS_STRICT_SHA === '1'
 
 const IS_WIN = process.platform === 'win32'
 
@@ -72,6 +86,29 @@ async function download(url, outPath, attempt = 1) {
   }
 }
 
+async function sha256File(path) {
+  const hash = createHash('sha256')
+  await pipeline(createReadStream(path), hash)
+  return hash.digest('hex')
+}
+
+async function verifyTarball(tarPath, triple) {
+  const expected = EXPECTED_SHA256[triple]
+  if (!expected) {
+    const msg = `no pinned SHA-256 for ${triple}; skipping integrity check`
+    if (STRICT) die(`${msg} (CHATVAS_STRICT_SHA=1 requires a pinned digest)`)
+    log(`  ↳ warn: ${msg}`)
+    return
+  }
+  log(`  ↳ verifying SHA-256`)
+  const actual = await sha256File(tarPath)
+  if (actual.toLowerCase() !== expected.toLowerCase()) {
+    try { rmSync(tarPath) } catch { /* ignore */ }
+    die(`SHA-256 mismatch for ${triple}:\n  expected ${expected}\n  actual   ${actual}\n(deleted ${tarPath})`)
+  }
+  log(`  ↳ SHA-256 OK`)
+}
+
 async function extract(tarGzPath, destDir) {
   log(`extracting to ${destDir}`)
   mkdirSync(destDir, { recursive: true })
@@ -107,6 +144,7 @@ async function main() {
   } else {
     log(`using cached tarball ${tarPath}`)
   }
+  await verifyTarball(tarPath, triple)
   await extract(tarPath, destDir)
   verify(destDir)
   // Leave the tarball on disk — re-extract if something gets corrupted, and delete-from-cache in a CI cleanup step.
