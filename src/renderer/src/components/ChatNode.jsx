@@ -44,7 +44,7 @@ function ChatNode({ id, data }) {
     const onNewWindow = (event) => {
       const url = event.url
       if (url && data.onBranch) {
-        data.onBranch(url, id)
+        data.onBranch({ kind: 'chat', url }, id)
       }
     }
 

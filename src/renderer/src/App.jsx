@@ -9,6 +9,9 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import ChatNode from './components/ChatNode'
+import VideoNode from './components/VideoNode'
+import SettingsDrawer from './components/SettingsDrawer'
+import BootstrapOverlay from './components/BootstrapOverlay'
 import themes from './themes'
 
 let nodeIdCounter = 1
@@ -27,8 +30,26 @@ function App() {
   // --- Theme state ---
   const [themeName, setThemeName] = useState('midnight')
   const theme = themes[themeName]
+  const [showSettings, setShowSettings] = useState(false)
+  const [bootstrapDone, setBootstrapDone] = useState(false)
 
-  // Apply theme CSS vars to :root whenever theme changes
+  // Kick off bootstrap on mount if needed. The overlay handles the UX; we only
+  // track completion here so the Video Studio actions know when the toolchain is ready.
+  useEffect(() => {
+    let cancelled = false
+    async function ensure() {
+      const s = await window.electronAPI?.bootstrap?.status()
+      if (cancelled) return
+      if (s?.done) { setBootstrapDone(true); return }
+      if (!s?.running) await window.electronAPI?.bootstrap?.start()
+    }
+    ensure()
+    const off = window.electronAPI?.bootstrap?.onStream((msg) => {
+      if (msg.type === 'done') setBootstrapDone(true)
+    })
+    return () => { cancelled = true; off?.() }
+  }, [])
+
   useEffect(() => {
     const root = document.documentElement
     for (const [key, value] of Object.entries(theme)) {
@@ -53,12 +74,12 @@ function App() {
     }
   }, [])
 
-  // Stable ref for handleBranch (avoids circular dep with initial node data)
+  // Stable refs
   const handleBranchRef = useRef(null)
   const handleCloseRef = useRef(null)
 
   const onBranchStable = useCallback(
-    (url, sourceNodeId) => handleBranchRef.current?.(url, sourceNodeId),
+    (payload, sourceNodeId) => handleBranchRef.current?.(payload, sourceNodeId),
     []
   )
   const onCloseStable = useCallback(
@@ -77,7 +98,7 @@ function App() {
         label: 'ChatGPT',
         registerWebview,
         unregisterWebview,
-        onBranch: (url, sourceNodeId) => handleBranchRef.current?.(url, sourceNodeId),
+        onBranch: (payload, sourceNodeId) => handleBranchRef.current?.(payload, sourceNodeId),
         onClose: (nodeId) => handleCloseRef.current?.(nodeId)
       },
       dragHandle: '.chat-node-header'
@@ -85,9 +106,8 @@ function App() {
   ])
   const [edges, setEdges, onEdgesChange] = useEdgesState([])
 
-  const nodeTypes = useMemo(() => ({ chatNode: ChatNode }), [])
+  const nodeTypes = useMemo(() => ({ chatNode: ChatNode, videoNode: VideoNode }), [])
 
-  // --- Close a node and its connected edges ---
   const handleClose = useCallback(
     (nodeId) => {
       unregisterWebview(nodeId)
@@ -98,27 +118,52 @@ function App() {
   )
   handleCloseRef.current = handleClose
 
-  // --- Branch handler ---
+  // --- Branch handler (dispatches on payload.kind) ---
   const handleBranch = useCallback(
-    (url, sourceNodeId) => {
+    (payload, sourceNodeId) => {
+      // Back-compat: old callers pass (url, sourceNodeId)
+      if (typeof payload === 'string') {
+        payload = { kind: 'chat', url: payload }
+      }
       const newId = getNextNodeId()
 
       setNodes((currentNodes) => {
         const sourceNode = currentNodes.find((n) => n.id === sourceNodeId)
         const baseX = sourceNode ? sourceNode.position.x : 0
         const baseY = sourceNode ? sourceNode.position.y : 0
+        const pos = {
+          x: baseX + 720,
+          y: baseY + Math.random() * 300 - 150
+        }
 
-        return [
-          ...currentNodes,
-          {
+        let node
+        if (payload.kind === 'video') {
+          node = {
+            id: newId,
+            type: 'videoNode',
+            position: pos,
+            data: {
+              parentContext: {
+                parentJobId: payload.parentJobId,
+                parentPrompt: payload.parentPrompt,
+                parentSummary: payload.parentSummary
+              },
+              initialPrompt: '',
+              registerWebview,
+              unregisterWebview,
+              onBranch: onBranchStable,
+              onClose: onCloseStable
+            },
+            dragHandle: '.video-node-header'
+          }
+        } else {
+          // chat branch — default path
+          node = {
             id: newId,
             type: 'chatNode',
-            position: {
-              x: baseX + 700,
-              y: baseY + Math.random() * 300 - 150
-            },
+            position: pos,
             data: {
-              url,
+              url: payload.url,
               label: `Branch from ${sourceNodeId}`,
               registerWebview,
               unregisterWebview,
@@ -127,7 +172,9 @@ function App() {
             },
             dragHandle: '.chat-node-header'
           }
-        ]
+        }
+
+        return [...currentNodes, node]
       })
 
       if (sourceNodeId) {
@@ -149,13 +196,13 @@ function App() {
   )
   handleBranchRef.current = handleBranch
 
-  // --- Fallback: listen for branch events from Electron main process via IPC ---
+  // --- IPC: branch events from webview new-window path ---
   useEffect(() => {
     if (!window.electronAPI) return
 
     window.electronAPI.onNewBranch(({ url, sourceWebContentsId }) => {
       const sourceNodeId = webContentsMapRef.current.get(sourceWebContentsId)
-      handleBranch(url, sourceNodeId || 'node-1')
+      handleBranch({ kind: 'chat', url }, sourceNodeId || 'node-1')
     })
 
     return () => {
@@ -165,8 +212,7 @@ function App() {
     }
   }, [handleBranch])
 
-  // --- Add a fresh root ChatGPT node ---
-  const handleAddRootNode = useCallback(() => {
+  const handleAddRootChatNode = useCallback(() => {
     const newId = getNextNodeId()
     setNodes((nds) => [
       ...nds,
@@ -190,7 +236,30 @@ function App() {
     ])
   }, [registerWebview, unregisterWebview, onBranchStable, onCloseStable, setNodes])
 
-  // --- Delete nodes via keyboard ---
+  const handleAddRootVideoNode = useCallback(() => {
+    if (!bootstrapDone) return
+    const newId = getNextNodeId()
+    setNodes((nds) => [
+      ...nds,
+      {
+        id: newId,
+        type: 'videoNode',
+        position: {
+          x: Math.random() * 600 - 300,
+          y: Math.random() * 400 - 200
+        },
+        data: {
+          initialPrompt: '',
+          registerWebview,
+          unregisterWebview,
+          onBranch: onBranchStable,
+          onClose: onCloseStable
+        },
+        dragHandle: '.video-node-header'
+      }
+    ])
+  }, [bootstrapDone, registerWebview, unregisterWebview, onBranchStable, onCloseStable, setNodes])
+
   const handleNodesDelete = useCallback(
     (deleted) => {
       for (const node of deleted) {
@@ -203,9 +272,19 @@ function App() {
   return (
     <div className="app-container">
       <div className="toolbar">
-        <button className="add-chat-btn" onClick={handleAddRootNode}>
-          + New Chat
-        </button>
+        <button className="add-chat-btn" onClick={handleAddRootChatNode}>+ New Chat</button>
+        <button
+          className="add-chat-btn"
+          onClick={handleAddRootVideoNode}
+          disabled={!bootstrapDone}
+          title={bootstrapDone ? 'Video Studio' : 'Video Studio setup is still running'}
+        >🎬 New Video</button>
+        <button
+          className="add-chat-btn"
+          onClick={() => setShowSettings(true)}
+          title="Settings"
+          style={{ padding: '8px 12px' }}
+        >⚙</button>
         <span className="toolbar-hint">Drag header to move. Scroll to zoom.</span>
         <div className="theme-picker">
           {Object.entries(themes).map(([key, t]) => (
@@ -244,6 +323,9 @@ function App() {
           position="bottom-left"
         />
       </ReactFlow>
+
+      {showSettings && <SettingsDrawer onClose={() => setShowSettings(false)} />}
+      <BootstrapOverlay onDone={() => setBootstrapDone(true)} />
     </div>
   )
 }

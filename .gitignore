@@ -34,3 +34,13 @@ npm-debug.log*
 .dev.vars
 wrangler.toml.bak
 .mf/
+
+# OpenMontage (managed by chatvas submodule + bootstrap)
+vendor/OpenMontage/.venv/
+vendor/OpenMontage/node_modules/
+vendor/OpenMontage/.env
+vendor/OpenMontage/.chatvas-bootstrap-ok
+vendor/OpenMontage/remotion-composer/node_modules/
+
+# Bundled Python runtime (downloaded by scripts/install-python.mjs)
+vendor/python-runtime/
