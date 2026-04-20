@@ -27,21 +27,31 @@ export default function SettingsDrawer({ onClose }) {
   const [model, setModel] = useState('claude-opus-4-7')
   const [present, setPresent] = useState({})
   const [drafts, setDrafts] = useState({})
+  const [encrypted, setEncrypted] = useState(true)
 
   const refresh = useCallback(async () => {
     const d = await window.electronAPI.video.doctor()
     setDoctor(d)
     setPresent(d.secrets || {})
+    setEncrypted(d.secrets?.encrypted !== false)
     setModel(d.model || 'claude-opus-4-7')
   }, [])
 
   useEffect(() => { refresh() }, [refresh])
 
   const save = useCallback(async (name, value) => {
-    await window.electronAPI.secrets.set(name, value)
-    setDrafts((d) => ({ ...d, [name]: '' }))
-    refresh()
-  }, [refresh])
+    if (!encrypted) {
+      alert('Cannot save secrets: encryption is unavailable. Install gnome-keyring or kwallet on Linux.')
+      return
+    }
+    try {
+      await window.electronAPI.secrets.set(name, value)
+      setDrafts((d) => ({ ...d, [name]: '' }))
+      refresh()
+    } catch (err) {
+      alert(`Failed to save secret: ${err.message}`)
+    }
+  }, [refresh, encrypted])
 
   const saveModel = useCallback(async (m) => {
     await window.electronAPI.secrets.set('__MODEL__', m)
@@ -101,6 +111,11 @@ export default function SettingsDrawer({ onClose }) {
           </div>
 
           <h3>API keys</h3>
+          {!encrypted && (
+            <div className="fail" style={{ marginBottom: 8, padding: 8, fontSize: 12 }}>
+              ⚠ Secret storage is unavailable. Install gnome-keyring or kwallet on Linux to enable encrypted secret storage.
+            </div>
+          )}
           {PROVIDER_KEYS.map((k) => {
             const dot = present[k.name] ? <span className="saved-dot" title="saved" /> : <span className="missing-dot" title="missing" />
             return (
@@ -113,6 +128,7 @@ export default function SettingsDrawer({ onClose }) {
                   value={drafts[k.name] || ''}
                   onChange={(e) => setDrafts((d) => ({ ...d, [k.name]: e.target.value }))}
                   onBlur={(e) => { if (e.target.value) save(k.name, e.target.value) }}
+                  disabled={!encrypted}
                 />
                 {present[k.name] && (
                   <button

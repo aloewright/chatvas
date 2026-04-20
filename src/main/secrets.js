@@ -57,10 +57,10 @@ function encrypt(value) {
     return { enc: 'safeStorage', data: safeStorage.encryptString(value).toString('base64') }
   }
   if (!_warnedNoEncryption) {
-    console.warn('[secrets] safeStorage encryption unavailable — secrets will be stored in plaintext. Install gnome-keyring or kwallet for encrypted storage on Linux.')
+    console.warn('[secrets] safeStorage encryption unavailable — refusing to store secrets in plaintext. Install gnome-keyring or kwallet for encrypted storage on Linux.')
     _warnedNoEncryption = true
   }
-  return { enc: 'plain', data: value }
+  return null
 }
 
 function decrypt(entry) {
@@ -83,7 +83,11 @@ export function setSecret(name, value) {
   if (value === null || value === undefined || value === '') {
     delete blob[name]
   } else {
-    blob[name] = encrypt(value)
+    const encrypted = encrypt(value)
+    if (encrypted === null) {
+      throw new Error('Cannot save secret: encryption unavailable')
+    }
+    blob[name] = encrypted
   }
   writeBlob(blob)
 }
@@ -91,7 +95,7 @@ export function setSecret(name, value) {
 // Cheap presence check — does not decrypt. Safe to return to the renderer.
 export function getSecretStatus() {
   const blob = readBlob()
-  const status = {}
+  const status = { encrypted: encryptionAvailable() }
   for (const k of PROVIDER_KEYS) {
     const entry = blob[k]
     status[k] = !!(entry && entry.data)
