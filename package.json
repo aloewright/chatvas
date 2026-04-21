@@ -11,6 +11,7 @@
   },
   "main": "./out/main/index.js",
   "scripts": {
+    "test": "node --test tests/**/*.test.mjs",
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
@@ -45,7 +46,8 @@
     "electron": "^40.2.1",
     "electron-builder": "^25.1.8",
     "electron-vite": "^5.0.0",
-    "wrangler": "^3.80.0"
+    "wrangler": "^3.80.0",
+    "yaml": "^2.8.3"
   },
   "build": {
     "appId": "com.chatnodescanvas.app",
@@ -64,12 +66,16 @@
       {
         "from": "vendor/OpenMontage-adapter",
         "to": "vendor/OpenMontage-adapter",
-        "filter": ["**/*.py"]
+        "filter": [
+          "**/*.py"
+        ]
       },
       {
         "from": "vendor/python-runtime",
         "to": "python-runtime",
-        "filter": ["**/*"]
+        "filter": [
+          "**/*"
+        ]
       },
       {
         "from": "vendor/OpenMontage",
@@ -90,7 +96,9 @@
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "icon": "build/icon.png"
@@ -105,7 +113,10 @@
       "target": [
         {
           "target": "dmg",
-          "arch": ["x64", "arm64"]
+          "arch": [
+            "x64",
+            "arm64"
+          ]
         }
       ],
       "icon": "build/icon.png",
@@ -115,11 +126,15 @@
       "target": [
         {
           "target": "AppImage",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         },
         {
           "target": "deb",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "icon": "build/icon.png",
