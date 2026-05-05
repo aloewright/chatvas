@@ -30,11 +30,26 @@ export default {
     }
 
     try {
+      // Root landing — something human-friendly instead of a bare 404.
+      if (url.pathname === '/' || url.pathname === '') {
+        return new Response(ROOT_HTML, {
+          headers: { ...corsHeaders, 'Content-Type': 'text/html; charset=utf-8' },
+        });
+      }
+
       // Health check endpoint
       if (url.pathname === '/health') {
         return new Response(JSON.stringify({ status: 'ok', timestamp: Date.now() }), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         });
+      }
+
+      // Auth handoff — browser lands here after sign-in, app polls here for the code.
+      if (url.pathname === '/auth/callback') {
+        return handleAuthCallback(request, env, url, corsHeaders);
+      }
+      if (url.pathname === '/auth/poll') {
+        return handleAuthPoll(request, env, url, corsHeaders);
       }
 
       // Canvas container endpoints - Durable Objects
@@ -77,6 +92,75 @@ export default {
     }
   },
 };
+
+/**
+ * Hosted OAuth callback for the Chatvas desktop app.
+ *
+ * Flow: Electron opens the system browser -> user signs in at auth.pdx.software ->
+ * cloudos-auth /native/post-signin mints a one-time code and redirects the browser
+ * to chatvas-api /auth/callback?nonce=...&code=...&state=... . We stash the code in
+ * AUTH_HANDOFF KV keyed by the app-provided nonce (short TTL) and render a success
+ * page. The Electron app is polling /auth/poll?nonce=... and pulls the code on its
+ * next tick (burned on first read).
+ */
+async function handleAuthCallback(_request, env, url, _corsHeaders) {
+  const nonce = url.searchParams.get('nonce');
+  const code = url.searchParams.get('code');
+  const state = url.searchParams.get('state') || '';
+  const errParam = url.searchParams.get('error');
+
+  const pageHeaders = { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' };
+
+  if (errParam) {
+    return new Response(callbackHtml('Sign-in failed', `Error: ${errParam}. You can close this tab.`), { status: 400, headers: pageHeaders });
+  }
+  if (!nonce || !code) {
+    return new Response(callbackHtml('Sign-in failed', 'Missing handoff parameters. You can close this tab.'), { status: 400, headers: pageHeaders });
+  }
+
+  await env.AUTH_HANDOFF.put(
+    `chatvas-handoff:${nonce}`,
+    JSON.stringify({ code, state, ts: Date.now() }),
+    { expirationTtl: 120 },
+  );
+
+  return new Response(callbackHtml('Signed in', 'You can close this tab and return to Chatvas.'), { headers: pageHeaders });
+}
+
+async function handleAuthPoll(_request, env, url, corsHeaders) {
+  const nonce = url.searchParams.get('nonce');
+  if (!nonce) {
+    return new Response(JSON.stringify({ error: 'Missing nonce' }), {
+      status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+    });
+  }
+  const key = `chatvas-handoff:${nonce}`;
+  const raw = await env.AUTH_HANDOFF.get(key);
+  if (!raw) {
+    return new Response(JSON.stringify({ pending: true }), {
+      headers: { ...corsHeaders, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+    });
+  }
+  await env.AUTH_HANDOFF.delete(key);
+  let parsed;
+  try { parsed = JSON.parse(raw); } catch { parsed = { code: raw }; }
+  return new Response(JSON.stringify({ code: parsed.code, state: parsed.state ?? '' }), {
+    headers: { ...corsHeaders, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+  });
+}
+
+function callbackHtml(title, body) {
+  return `<!doctype html><meta charset="utf-8"><title>${title}</title>
+<style>body{font-family:-apple-system,system-ui,sans-serif;padding:3rem;max-width:480px;margin:0 auto;color:#222;text-align:center;background:#0f0f1a;color:#e4e4e7}h2{margin-top:0}</style>
+<h2>${title}</h2><p>${body}</p>
+<script>setTimeout(()=>{try{window.close()}catch(e){}},1500)</script>`;
+}
+
+const ROOT_HTML = `<!doctype html><meta charset="utf-8"><title>Chatvas API</title>
+<style>body{font-family:-apple-system,system-ui,sans-serif;padding:3rem;max-width:560px;margin:0 auto;background:#0f0f1a;color:#e4e4e7}a{color:#93c5fd}code{background:rgba(255,255,255,.06);padding:.15em .35em;border-radius:4px}</style>
+<h1>Chatvas API</h1>
+<p>Backend for the Chatvas desktop app: media storage, canvas state, semantic search, and the hosted OAuth handoff.</p>
+<p>Endpoints: <code>GET /health</code>, <code>GET /auth/callback</code>, <code>GET /auth/poll</code>, <code>/api/canvas/*</code>, <code>/api/media/*</code>, <code>/api/ai/*</code>, <code>/api/search/*</code>, <code>/api/user/*</code>.</p>`;
 
 /**
  * Handle Canvas Container requests using Durable Objects

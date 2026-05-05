@@ -2,6 +2,9 @@ import { app, BrowserWindow, shell, protocol, net } from 'electron'
 import { join } from 'path'
 import { pathToFileURL } from 'node:url'
 import { registerVideoIpc } from './video-ipc.js'
+import { registerAiTerminalIpc } from './ai-terminal.js'
+import { registerAuthIpc } from './auth.js'
+import { warmCache } from './doppler.js'
 
 // Serve local rendered artifacts via a custom privileged scheme so the renderer can load them
 // from the dev-server origin without disabling webSecurity. The renderer asks for a URL via
@@ -82,6 +85,11 @@ app.whenReady().then(() => {
 
   createWindow()
   registerVideoIpc({ getMainWindow: () => mainWindow })
+  registerAiTerminalIpc({ getMainWindow: () => mainWindow })
+  registerAuthIpc({ getMainWindow: () => mainWindow })
+
+  // Pre-fetch Doppler secrets so they're cached for sync access
+  warmCache().catch(() => {})
 })
 
 app.on('window-all-closed', () => {

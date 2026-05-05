@@ -12,6 +12,7 @@ import ChatNode from './components/ChatNode'
 import VideoNode from './components/VideoNode'
 import SettingsDrawer from './components/SettingsDrawer'
 import BootstrapOverlay from './components/BootstrapOverlay'
+import FloatingChat from './components/FloatingChat'
 import themes from './themes'
 
 let nodeIdCounter = 1
@@ -32,6 +33,7 @@ function App() {
   const theme = themes[themeName]
   const [showSettings, setShowSettings] = useState(false)
   const [bootstrapDone, setBootstrapDone] = useState(false)
+  const floatingChatRef = useRef(null)
 
   // Kick off bootstrap on mount if needed. The overlay handles the UX; we only
   // track completion here so the Video Studio actions know when the toolchain is ready.
@@ -88,22 +90,7 @@ function App() {
   )
 
   // --- React Flow state ---
-  const [nodes, setNodes, onNodesChange] = useNodesState([
-    {
-      id: 'node-1',
-      type: 'chatNode',
-      position: { x: 0, y: 0 },
-      data: {
-        url: 'https://chatgpt.com',
-        label: 'ChatGPT',
-        registerWebview,
-        unregisterWebview,
-        onBranch: (payload, sourceNodeId) => handleBranchRef.current?.(payload, sourceNodeId),
-        onClose: (nodeId) => handleCloseRef.current?.(nodeId)
-      },
-      dragHandle: '.chat-node-header'
-    }
-  ])
+  const [nodes, setNodes, onNodesChange] = useNodesState([])
   const [edges, setEdges, onEdgesChange] = useEdgesState([])
 
   const nodeTypes = useMemo(() => ({ chatNode: ChatNode, videoNode: VideoNode }), [])
@@ -272,7 +259,7 @@ function App() {
   return (
     <div className="app-container">
       <div className="toolbar">
-        <button className="add-chat-btn" onClick={handleAddRootChatNode}>+ New Chat</button>
+        <button className="add-chat-btn" onClick={() => floatingChatRef.current?.open()}>+ New Chat</button>
         <button
           className="add-chat-btn"
           onClick={handleAddRootVideoNode}
@@ -324,6 +311,7 @@ function App() {
         />
       </ReactFlow>
 
+      <FloatingChat ref={floatingChatRef} />
       {showSettings && <SettingsDrawer onClose={() => setShowSettings(false)} />}
       <BootstrapOverlay onDone={() => setBootstrapDone(true)} />
     </div>

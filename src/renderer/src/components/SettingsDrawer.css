@@ -62,7 +62,7 @@
   background: var(--btn-bg);
   color: var(--text);
   border: 1px solid var(--btn-border);
-  border-radius: 6px;
+  border-radius: 8px;
   padding: 5px 8px;
   font-size: 12px;
   font-family: 'SF Mono', 'Fira Code', monospace;
@@ -103,4 +103,17 @@
   color: var(--text-muted);
   cursor: pointer;
   font-size: 18px;
+}
+
+.vs-btn.secondary {
+  background: var(--btn-bg);
+  color: var(--text);
+  border: 1px solid var(--btn-border);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.vs-btn.secondary:hover {
+  background: var(--bg-header);
 }

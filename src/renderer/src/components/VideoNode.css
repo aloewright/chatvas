@@ -96,6 +96,17 @@
 
 .vs-btn.danger { background: #e5484d; }
 
+.vs-enhance-btn {
+  font-weight: 600;
+  color: var(--accent) !important;
+  border-color: var(--accent) !important;
+  background: transparent !important;
+}
+.vs-enhance-btn:hover:not(:disabled) {
+  background: var(--accent) !important;
+  color: white !important;
+}
+
 .video-node-tabs {
   display: flex;
   border-bottom: 1px solid var(--border-light);

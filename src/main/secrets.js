@@ -21,7 +21,17 @@ export const PROVIDER_KEYS = [
 ]
 
 // Non-secret pseudo-settings stored in the same blob.
-export const PSEUDO_KEYS = ['__MODEL__']
+export const PSEUDO_KEYS = [
+  '__MODEL__',
+  '__AI_TERMINAL_PROVIDER__',
+  '__DOPPLER_TOKEN__',
+  '__DOPPLER_PROJECT__',
+  '__DOPPLER_CONFIG__',
+  '__CF_WORKER_URL__',
+  '__CF_API_TOKEN__',
+  // better-auth session bearer token (from auth.pdx.software)
+  '__AUTH_SESSION_TOKEN__'
+]
 
 const VALID_KEYS = new Set([...PROVIDER_KEYS, ...PSEUDO_KEYS])
 const DEFAULT_MODEL = 'claude-opus-4-7'

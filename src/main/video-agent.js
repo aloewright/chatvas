@@ -10,6 +10,7 @@ import { PythonBridge, listPipelinesAndTools } from './python-bridge.js'
 import { getModel, getSecret, buildChildEnv } from './secrets.js'
 import { jobDir, appendEvent, writeManifest, refreshManifestBytes } from './artifact-store.js'
 import { omWorkingRoot } from './runtimes.js'
+import { resolveSecret, buildChildEnvWithDoppler, resolveSecretSync } from './doppler.js'
 
 const IS_WIN = process.platform === 'win32'
 const MAX_READ_BYTES = 1_000_000           // 1 MB cap on read_file
@@ -271,39 +272,33 @@ export function startVideoJob({ jobId, prompt, pipelineId, parentContext, abortS
       outputAbsPath: z.string().describe('Absolute path where the MP4 should be written')
     },
     async ({ compositionId, propsJsonAbsPath, outputAbsPath }) => {
-      return await new Promise((resolvePromise) => {
-        const composer = join(omRoot(), 'remotion-composer')
-        if (!existsSync(composer)) {
-          resolvePromise({ content: [{ type: 'text', text: `remotion-composer not found at ${composer}` }], is_error: true })
-          return
+      const composer = join(omRoot(), 'remotion-composer')
+      if (!existsSync(composer)) {
+        return { content: [{ type: 'text', text: `remotion-composer not found at ${composer}` }], is_error: true }
+      }
+      if (!isUnder(outputAbsPath, workDir)) {
+        return { content: [{ type: 'text', text: `outputAbsPath must be under job dir ${workDir}` }], is_error: true }
+      }
+      if (!isUnder(propsJsonAbsPath, workDir)) {
+        return { content: [{ type: 'text', text: `propsJsonAbsPath must be under job dir ${workDir}` }], is_error: true }
+      }
+      if (!existsSync(propsJsonAbsPath)) {
+        return { content: [{ type: 'text', text: `props JSON not found: ${propsJsonAbsPath}` }], is_error: true }
+      }
+      for (const s of [compositionId, propsJsonAbsPath, outputAbsPath]) {
+        if (!SAFE_ARG.test(s)) {
+          return { content: [{ type: 'text', text: `illegal characters in argument: ${s}` }], is_error: true }
         }
-        if (!isUnder(outputAbsPath, workDir)) {
-          resolvePromise({ content: [{ type: 'text', text: `outputAbsPath must be under job dir ${workDir}` }], is_error: true })
-          return
-        }
-        if (!isUnder(propsJsonAbsPath, workDir)) {
-          resolvePromise({ content: [{ type: 'text', text: `propsJsonAbsPath must be under job dir ${workDir}` }], is_error: true })
-          return
-        }
-        if (!existsSync(propsJsonAbsPath)) {
-          resolvePromise({ content: [{ type: 'text', text: `props JSON not found: ${propsJsonAbsPath}` }], is_error: true })
-          return
-        }
-        // Validate agent-controlled inputs before passing to spawn — no shell metacharacters.
-        for (const s of [compositionId, propsJsonAbsPath, outputAbsPath]) {
-          if (!SAFE_ARG.test(s)) {
-            resolvePromise({ content: [{ type: 'text', text: `illegal characters in argument: ${s}` }], is_error: true })
-            return
-          }
-        }
-        if (!/^[A-Za-z0-9_-]+$/.test(compositionId)) {
-          resolvePromise({ content: [{ type: 'text', text: `compositionId must match [A-Za-z0-9_-]+` }], is_error: true })
-          return
-        }
+      }
+      if (!/^[A-Za-z0-9_-]+$/.test(compositionId)) {
+        return { content: [{ type: 'text', text: `compositionId must match [A-Za-z0-9_-]+` }], is_error: true }
+      }
 
+      const env = await buildChildEnvWithDoppler()
+
+      return await new Promise((resolvePromise) => {
         const cmd = IS_WIN ? 'npx.cmd' : 'npx'
         const args = ['remotion', 'render', 'src/index.ts', compositionId, outputAbsPath, `--props=${propsJsonAbsPath}`]
-        const env = buildChildEnv()
         const child = spawn(cmd, args, { cwd: composer, env, shell: false })
         registerChild(child)
         const abortHandler = () => { try { treeKill(child.pid, 'SIGTERM', () => {}) } catch { /* ignore */ } }
@@ -397,8 +392,8 @@ export function startVideoJob({ jobId, prompt, pipelineId, parentContext, abortS
     let keyWasSet = false
 
     try {
-      const anthropicKey = getSecret('ANTHROPIC_API_KEY')
-      if (!anthropicKey) throw new Error('ANTHROPIC_API_KEY not set. Add it in Settings.')
+      const anthropicKey = await resolveSecret('ANTHROPIC_API_KEY')
+      if (!anthropicKey) throw new Error('ANTHROPIC_API_KEY not set. Add it in Settings or configure Doppler.')
       process.env.ANTHROPIC_API_KEY = anthropicKey
       keyWasSet = true
 

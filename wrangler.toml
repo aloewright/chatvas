@@ -1,79 +1,49 @@
-# Cloudflare Workers configuration for Chat Nodes Canvas
-
 name = "chatvas-api"
 main = "src/worker/index.js"
-compatibility_date = "2024-01-01"
+compatibility_date = "2026-03-31"
+compatibility_flags = ["nodejs_compat"]
 workers_dev = true
 
-# AI Gateway binding for AI model access
-[ai]
-binding = "AI"
-gateway = "x"
+[observability]
+enabled = true
 
-# Workers KV for key-value storage (session data, preferences)
+# Short-lived auth handoff codes (nonce → one-time code from cloudos-auth)
 [[kv_namespaces]]
-binding = "KV"
-id = "YOUR_KV_NAMESPACE_ID"
-preview_id = "YOUR_KV_PREVIEW_NAMESPACE_ID"
+binding = "AUTH_HANDOFF"
+id = "e81862bdafce48b7ae4439fd66b3ed99"
+preview_id = "cbf47d5de1aa47e3b39dec546008a2ca"
 
-# D1 Database for relational data (user data, canvas metadata)
+# User/canvas/media metadata
 [[d1_databases]]
 binding = "DB"
 database_name = "chatvas-db"
-database_id = "YOUR_D1_DATABASE_ID"
-preview_database_id = "YOUR_D1_PREVIEW_DATABASE_ID"
+database_id = "be40dc9b-985a-4312-af19-4bfa768a6c77"
+preview_database_id = "02f0ab5b-f2bc-40a2-a0c1-7158ea9f973d"
 
-# Vectorize Index for semantic search and embeddings
-[[vectorize]]
-binding = "VECTORIZE"
-index_name = "chatvas-embeddings"
-
-# R2 Bucket for media storage (images, PDFs, videos)
+# Media storage (images, PDFs, videos)
 [[r2_buckets]]
 binding = "MEDIA"
 bucket_name = "chatvas-media"
 preview_bucket_name = "chatvas-media-preview"
 
-# Durable Objects for stateful canvas containers
+# Semantic search
+[[vectorize]]
+binding = "VECTORIZE"
+index_name = "chatvas-embeddings"
+
+# Durable Object for per-canvas state
 [[durable_objects.bindings]]
 name = "CANVAS_CONTAINER"
 class_name = "CanvasContainer"
-script_name = "chatvas-api"
 
 [[migrations]]
 tag = "v1"
 new_classes = ["CanvasContainer"]
 
-# Service bindings for Composio API integration
-[[services]]
-binding = "COMPOSIO_API"
-service = "composio-integration"
-environment = "production"
+# AI Gateway for model calls
+[ai]
+binding = "AI"
 
-# Routes configuration - adjust based on your domain
-# routes = [
-#   { pattern = "api.chatvas.com/*", zone_name = "chatvas.com" }
-# ]
-
-# Cloudflare Access configuration
-# Note: Cloudflare Access is configured via the Cloudflare Dashboard
-# This is a placeholder for documentation purposes
-# [access]
-# enabled = true
-# policy_name = "chatvas-access-policy"
-
-[env.production]
-name = "chatvas-api-production"
-workers_dev = false
-
-[env.staging]
-name = "chatvas-api-staging"
-workers_dev = true
-
-# Build configuration
-[build]
-command = "npm run build:worker"
-
-# Observability
-[observability]
-enabled = true
+# auth.pdx.software base URL for the /native/exchange call
+[vars]
+AUTH_BASE = "https://auth.pdx.software"

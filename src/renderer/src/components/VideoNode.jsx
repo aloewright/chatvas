@@ -3,12 +3,26 @@ import { Handle, Position } from '@xyflow/react'
 import useVideoJob from '../hooks/useVideoJob'
 import './VideoNode.css'
 
+const VIDEO_MODELS = [
+  { id: '', label: 'Auto (agent picks)' },
+  { id: 'runway', label: 'Runway Gen-4' },
+  { id: 'kling', label: 'Kling (via fal.ai)' },
+  { id: 'veo', label: 'Veo (via fal.ai)' },
+  { id: 'minimax', label: 'MiniMax (via fal.ai)' },
+  { id: 'heygen', label: 'HeyGen (avatar)' },
+  { id: 'flux-pro', label: 'FLUX Pro (images)' },
+  { id: 'dalle', label: 'DALL-E 3 (images)' },
+  { id: 'imagen', label: 'Google Imagen (images)' }
+]
+
 function VideoNode({ id, data }) {
   const [pipelines, setPipelines] = useState([])
   const [pipelineId, setPipelineId] = useState('')
+  const [videoModel, setVideoModel] = useState('')
   const [prompt, setPrompt] = useState(data.initialPrompt || '')
   const [tab, setTab] = useState('prompt')
   const [mp4Url, setMp4Url] = useState(null)
+  const [enhancing, setEnhancing] = useState(false)
   const textareaRef = useRef(null)
   const job = useVideoJob()
 
@@ -49,8 +63,21 @@ function VideoNode({ id, data }) {
   const onSubmit = useCallback(async () => {
     if (!prompt.trim()) return
     setTab('stream')
-    await job.start({ nodeId: id, prompt, pipelineId: pipelineId || null, parentContext })
-  }, [prompt, pipelineId, parentContext, id, job.start])
+    // Append model preference hint so the orchestrator knows which provider to use
+    const modelHint = videoModel ? `\n\n(Preferred video model: ${videoModel})` : ''
+    await job.start({ nodeId: id, prompt: prompt + modelHint, pipelineId: pipelineId || null, parentContext })
+  }, [prompt, pipelineId, videoModel, parentContext, id, job.start])
+
+  const onEnhancePrompt = useCallback(async () => {
+    setEnhancing(true)
+    try {
+      const result = await window.electronAPI?.aiTerminal?.enhancePrompt(prompt, 'video')
+      if (result?.enhanced) {
+        setPrompt(result.enhanced)
+      }
+    } catch { /* silent */ }
+    setEnhancing(false)
+  }, [prompt])
 
   const onKeyDown = useCallback((e) => {
     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
@@ -82,7 +109,7 @@ function VideoNode({ id, data }) {
       <Handle type="target" position={Position.Left} className="chat-handle" />
 
       <div className="video-node-header">
-        <span className="video-node-title">🎬 Video Studio · {pipelineId || 'auto'}</span>
+        <span className="video-node-title">🎬 Video Studio · {videoModel || pipelineId || 'auto'}</span>
         <span className={`video-node-status ${job.status}`}>{statusLabel}</span>
         <button className="close-btn" title="Close node" onClick={() => data.onClose?.(id)}>×</button>
       </div>
@@ -98,6 +125,24 @@ function VideoNode({ id, data }) {
             <option key={p.id} value={p.id}>{p.name}</option>
           ))}
         </select>
+        <select
+          value={videoModel}
+          onChange={(e) => setVideoModel(e.target.value)}
+          disabled={job.status === 'running'}
+          title="Video generation model"
+        >
+          {VIDEO_MODELS.map((m) => (
+            <option key={m.id} value={m.id}>{m.label}</option>
+          ))}
+        </select>
+        <button
+          className="vs-btn secondary vs-enhance-btn"
+          onClick={onEnhancePrompt}
+          disabled={enhancing || job.status === 'running'}
+          title="Enhance prompt with AI"
+        >
+          {enhancing ? '...' : '* Enhance'}
+        </button>
         <button
           className="vs-btn"
           onClick={onSubmit}
