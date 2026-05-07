@@ -11,6 +11,7 @@
   },
   "main": "./out/main/index.js",
   "scripts": {
+    "test": "node --test tests/**/*.test.mjs",
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
@@ -46,7 +47,8 @@
     "electron": "^40.2.1",
     "electron-builder": "^25.1.8",
     "electron-vite": "^5.0.0",
-    "wrangler": "^3.80.0"
+    "wrangler": "^3.80.0",
+    "yaml": "^2.8.3"
   },
   "build": {
     "appId": "com.chatnodescanvas.app",
